@@ -1,4 +1,4 @@
-import { For, Show, createResource, createSignal, onCleanup, onMount, type JSX } from 'solid-js'
+import { For, Show, createMemo, createResource, createSignal, onCleanup, onMount, type JSX } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import { api } from './api'
 
@@ -202,5 +202,107 @@ export function PathInput(props: { value: string; onChange: (v: string) => void;
   )
 }
 
-export const fmtDate = (ms: number) => (ms ? new Date(ms).toLocaleDateString('zh-CN') : '')
+// ───────────────────────── 可输入筛选的下拉框 ─────────────────────────
+
+export function Combobox(props: {
+  options: { value: number; label: string }[]
+  value: number | null
+  onChange: (value: number) => void
+  placeholder?: string
+  empty?: string
+  class?: string
+}) {
+  const [open, setOpen] = createSignal(false)
+  /** 正在输入的筛选文字；null = 没在输入，显示当前选中项 */
+  const [text, setText] = createSignal<string | null>(null)
+  const [active, setActive] = createSignal(0)
+  let list: HTMLDivElement | undefined
+
+  const selectedLabel = () => props.options.find((o) => o.value === props.value)?.label ?? ''
+  const filtered = createMemo(() => {
+    const k = (text() ?? '').trim().toLowerCase()
+    return k ? props.options.filter((o) => o.label.toLowerCase().includes(k)) : props.options
+  })
+  const close = () => {
+    setOpen(false)
+    setText(null)
+  }
+  const pick = (o: { value: number }) => {
+    close()
+    if (o.value !== props.value) props.onChange(o.value)
+  }
+  const move = (delta: number) => {
+    const n = filtered().length
+    if (!n) return
+    setActive((i) => Math.min(n - 1, Math.max(0, i + delta)))
+    queueMicrotask(() => list?.children[active()]?.scrollIntoView({ block: 'nearest' }))
+  }
+
+  return (
+    <div class={`relative ${props.class ?? ''}`}>
+      <input
+        class="input"
+        role="combobox"
+        aria-expanded={open()}
+        autocomplete="off"
+        placeholder={props.placeholder}
+        value={text() ?? selectedLabel()}
+        onFocus={(e) => {
+          setOpen(true)
+          e.currentTarget.select()
+        }}
+        onClick={() => setOpen(true)}
+        onBlur={close}
+        onInput={(e) => {
+          setText(e.currentTarget.value)
+          setActive(0)
+          setOpen(true)
+        }}
+        onKeyDown={(e) => {
+          if (e.isComposing) return
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault()
+            if (!open()) setOpen(true)
+            else move(e.key === 'ArrowDown' ? 1 : -1)
+          } else if (e.key === 'Enter') {
+            const o = open() && filtered()[active()]
+            if (o) {
+              e.preventDefault()
+              pick(o)
+            }
+          } else if (e.key === 'Escape' && open()) {
+            e.stopPropagation()
+            close()
+          }
+        }}
+      />
+      <Show when={open()}>
+        <div
+          ref={list}
+          class="absolute top-full right-0 left-0 z-40 mt-1 max-h-80 overflow-y-auto rounded-md border border-slate-300 bg-white shadow-lg"
+        >
+          <For each={filtered()} fallback={<div class="px-2 py-2 text-slate-400">{props.empty ?? '没有匹配项'}</div>}>
+            {(o, i) => (
+              <div
+                class="cursor-pointer truncate px-2 py-1.5"
+                classList={{ 'bg-indigo-100': i() === active(), 'font-semibold text-indigo-700': o.value === props.value }}
+                title={o.label}
+                // mousedown 而不是 click：赶在输入框失焦（会关闭下拉）之前选中
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  pick(o)
+                }}
+                onMouseEnter={() => setActive(i())}
+              >
+                {o.label}
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+export const fmtDate =(ms: number) => (ms ? new Date(ms).toLocaleDateString('zh-CN') : '')
 export const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p

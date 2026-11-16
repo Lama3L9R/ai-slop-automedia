@@ -54,7 +54,7 @@ export function listMedia(): MediaListItem[] {
 
 export function getMedia(id: number): Media {
   const row = db().select().from(schema.media).where(eq(schema.media.id, id)).get()
-  if (!row) throw notFound(`Media #${id} 不存在`)
+  if (!row) throw notFound(`媒体 #${id} 不存在`)
   return rowToMedia(row)
 }
 
@@ -89,7 +89,10 @@ export function getMediaDetail(id: number): MediaDetail {
 }
 
 /** 校验并补齐：集引用到的季自动建出来；同一 (季, 集) 不允许重复 */
-function normalize(input: MediaSaveInput): { seasons: Season[]; episodes: Episode[] } {
+/** seasonMoves 可省略的保存入参（内部调用、测试用） */
+export type SaveInput = Omit<MediaSaveInput, 'seasonMoves'> & Partial<Pick<MediaSaveInput, 'seasonMoves'>>
+
+function normalize(input: SaveInput): { seasons: Season[]; episodes: Episode[] } {
   const seen = new Set<string>()
   for (const e of input.episodes) {
     const k = `${e.season}:${e.number}`
@@ -124,7 +127,7 @@ function writeChildren(tx: Tx, mediaId: number, seasons: Season[], episodes: Epi
       .run()
 }
 
-export function createMedia(input: MediaSaveInput): number {
+export function createMedia(input: SaveInput): number {
   const { seasons, episodes } = normalize(input)
   const now = Date.now()
   return db().transaction((tx) => {
@@ -138,15 +141,33 @@ export function createMedia(input: MediaSaveInput): number {
   })
 }
 
-export function saveMedia(id: number, input: MediaSaveInput): void {
+export function saveMedia(id: number, input: SaveInput): void {
   getMedia(id)
   const { seasons, episodes } = normalize(input)
+
+  // 改了季号：已导入的文件跟着换季（磁盘上的改名由之后的 sync 完成）
+  const moves = new Map((input.seasonMoves ?? []).filter((m) => m.from !== m.to).map((m) => [m.from, m.to]))
+  const links = moves.size ? getLinks(id) : []
+  const taken = new Set<string>()
+  for (const l of links) {
+    const key = `${moves.get(l.season) ?? l.season}:${l.episode}:${l.kind}:${l.suffix}:${l.ext}`
+    if (taken.has(key))
+      throw badRequest(
+        `改季号之后，第 ${moves.get(l.season) ?? l.season} 季第 ${l.episode} 集会有两个同类文件。请先移除其中一个已导入的文件`,
+      )
+    taken.add(key)
+  }
+
   db().transaction((tx) => {
     tx.update(schema.media)
       .set({ ...input.media, updatedAt: Date.now() })
       .where(eq(schema.media.id, id))
       .run()
     writeChildren(tx, id, seasons, episodes)
+    for (const l of links) {
+      const to = moves.get(l.season)
+      if (to !== undefined) tx.update(schema.links).set({ season: to }).where(eq(schema.links.id, l.id)).run()
+    }
   })
 }
 

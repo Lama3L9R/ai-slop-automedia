@@ -54,7 +54,7 @@ export async function planImport(req: ImportRequest): Promise<Plan> {
   const detail = getMediaDetail(req.mediaId)
   const { media } = detail
   const lib = findLibrary(media.libraryId)
-  if (!lib) throw badRequest(`「${media.title}」还没有选择媒体库，请先在 Media 页面设置`)
+  if (!lib) throw badRequest(`「${media.title}」还没有选择媒体库，请先在媒体页面设置`)
 
   const fromThisSource = (l: Link) => l.sourceType === req.sourceType && l.sourceRef === req.sourceRef
   const kept = req.replaceSource ? detail.links.filter((l) => !fromThisSource(l)) : detail.links

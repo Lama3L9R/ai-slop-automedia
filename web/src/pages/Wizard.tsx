@@ -18,7 +18,7 @@ import { A, useSearchParams } from '@solidjs/router'
 import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import { api } from '../api'
-import { Modal, baseName, toast, useAction } from '../ui'
+import { Combobox, Modal, baseName, toast, useAction } from '../ui'
 
 interface Assign {
   season: number | null
@@ -123,7 +123,7 @@ export default function WizardPage() {
   function changeMedia(id: number | null) {
     setMediaId(id)
     // 还没动手填过才用历史记录覆盖，避免冲掉刚填好的编号
-    if (!assignedFiles().length || confirm('用这个 Media 之前的导入记录重新填表？（取消 = 保留当前填写的内容）')) prefill(id)
+    if (!assignedFiles().length || confirm('用这个媒体之前的导入记录重新填表？（取消 = 保留当前填写的内容）')) prefill(id)
   }
 
   // ───────────── 可见行 ─────────────
@@ -210,7 +210,7 @@ export default function WizardPage() {
   const [promptPreview, setPromptPreview] = createSignal<AiSuggestResult | null>(null)
   const [runAi, aiBusy] = useAction(async (task: 'video' | 'subtitle', dryRun: boolean) => {
     const id = mediaId()
-    if (id === null) throw new Error('请先选择 Media，AI 需要它的剧集信息')
+    if (id === null) throw new Error('请先选择媒体，AI 需要它的剧集信息')
     const want = (n: TreeNode) => n.kind === task
     const picked = selectedFiles().filter(want)
     const files = picked.length ? picked : importable().filter(want)
@@ -241,7 +241,7 @@ export default function WizardPage() {
 
   function buildRequest() {
     const id = mediaId()
-    if (id === null) throw new Error('请先选择要导入到哪个 Media')
+    if (id === null) throw new Error('请先选择要导入到哪个媒体')
     const items: ImportItem[] = assignedFiles().map((n) => ({
       path: n.path,
       season: assign[n.path].season!,
@@ -307,23 +307,16 @@ export default function WizardPage() {
         <div class="card sticky top-[49px] z-20 mb-3 shadow-sm">
           <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2">
             <span class="text-xs text-slate-500">导入到</span>
-            <select
-              class="input w-72"
-              value={mediaId() ?? ''}
-              onChange={(e) => changeMedia(e.currentTarget.value ? Number(e.currentTarget.value) : null)}
-            >
-              <option value="">— 选择 Media —</option>
-              <For each={mediaList()}>
-                {(m) => (
-                  <option value={m.id}>
-                    {m.title}
-                    {m.year ? ` (${m.year})` : ''}
-                  </option>
-                )}
-              </For>
-            </select>
+            <Combobox
+              class="w-80"
+              placeholder="输入标题筛选，选择媒体"
+              empty="没有匹配的媒体"
+              value={mediaId()}
+              options={(mediaList() ?? []).map((m) => ({ value: m.id, label: `${m.title}${m.year ? ` (${m.year})` : ''}` }))}
+              onChange={changeMedia}
+            />
             <A href="/" target="_blank" class="text-xs text-indigo-600 hover:underline">
-              新建 Media ↗
+              新建媒体 ↗
             </A>
             <span class="ml-auto text-xs text-slate-500">AI</span>
             <button class="btn btn-sm" disabled={aiBusy()} onClick={() => void runAi('video', false)}>
@@ -502,7 +495,7 @@ export default function WizardPage() {
             <option value="copy">拷贝（copy）</option>
           </select>
           <Show when={hasPrior()}>
-            <label class="flex items-center gap-1" title="先移除这个来源之前导入到该 Media 的全部链接，再按现在的表重新创建。不勾选则只新增 / 替换同名文件。">
+            <label class="flex items-center gap-1" title="先移除这个来源之前导入到该媒体的全部链接，再按现在的表重新创建。不勾选则只新增 / 替换同名文件。">
               <input type="checkbox" checked={replaceSource()} onChange={(e) => setReplace(e.currentTarget.checked)} />
               重新导入（先清掉此来源之前的链接）
             </label>
@@ -558,7 +551,7 @@ export default function WizardPage() {
                 回到来源
               </A>
               <A class="btn btn-primary" href={`/media/${mediaId()}`}>
-                查看 Media
+                查看媒体
               </A>
             </Show>
           }

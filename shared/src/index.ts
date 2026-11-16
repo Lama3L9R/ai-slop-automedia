@@ -168,6 +168,8 @@ export const MediaSaveInput = z.object({
   media: MediaInput,
   seasons: z.array(SeasonInput).default([]),
   episodes: z.array(EpisodeInput).default([]),
+  /** 这次保存里改了季号的季（原季号 → 新季号）：已导入的文件会跟着换季并改名 */
+  seasonMoves: z.array(z.object({ from: int.min(0), to: int.min(0) })).default([]),
 })
 export type MediaSaveInput = z.infer<typeof MediaSaveInput>
 

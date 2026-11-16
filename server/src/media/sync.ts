@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import type { MediaDetail } from '@automedia/shared'
+import type { Link, MediaDetail } from '@automedia/shared'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db'
 import { errMsg } from '../errors'
@@ -127,7 +127,7 @@ async function doSync(id: number): Promise<SyncResult> {
   const { media } = detail
   const lib = findLibrary(media.libraryId)
   if (!lib) {
-    if (detail.links.length) warnings.push('这个 Media 没有选择媒体库（或媒体库已被删除），磁盘上的文件未更新')
+    if (detail.links.length) warnings.push('这个媒体没有选择媒体库（或媒体库已被删除），磁盘上的文件未更新')
     return { warnings }
   }
 
@@ -172,20 +172,52 @@ async function doSync(id: number): Promise<SyncResult> {
       .all()
       .map((a) => a.path),
   ])
-  for (const link of detail.links) {
-    const want = path.join(dir, layout.linkRel(link))
-    try {
-      if (link.targetPath !== want) {
+  const setPath = (link: Link, p: string) => {
+    d.update(schema.links).set({ targetPath: p }).where(eq(schema.links.id, link.id)).run()
+    link.targetPath = p
+  }
+  const pending = detail.links
+    .map((link) => ({ link, want: path.join(dir, layout.linkRel(link)) }))
+    .filter((x) => x.link.targetPath !== x.want)
+  // 多轮处理：目标位置被另一个「也要挪走」的链接占着时先等它走（改季号、两季对调时会出现）
+  for (let guard = pending.length * 2 + 2; pending.length && guard > 0; guard--) {
+    let progressed = false
+    for (const x of [...pending]) {
+      const { link, want } = x
+      try {
         if (await exists(link.targetPath)) {
-          if (await exists(want)) throw new Error(`目标已存在：${want}`)
-          await moveFile(link.targetPath, want)
+          if (await exists(want)) {
+            if (pending.some((o) => o !== x && o.link.targetPath === want)) continue
+            throw new Error(`目标已存在：${want}`)
+          }
+          const from = link.targetPath
+          await moveFile(from, want)
           // 视频旁边不归本工具管的字幕等附属文件跟着改名
-          if (link.kind === 'video') await renameSidecars(link.targetPath, want, (p) => managed.has(p))
+          if (link.kind === 'video') await renameSidecars(from, want, (p) => managed.has(p))
         }
-        d.update(schema.links).set({ targetPath: want }).where(eq(schema.links.id, link.id)).run()
-        link.targetPath = want
+        setPath(link, want)
+      } catch (e) {
+        warnings.push(`${path.basename(link.targetPath)}：${errMsg(e)}`)
       }
-      if (!(await exists(want))) await createLink(link.linkMode, link.sourcePath, want)
+      pending.splice(pending.indexOf(x), 1)
+      progressed = true
+    }
+    if (!progressed && pending.length) {
+      // 互相占着对方的位置：把其中一个先挪到临时名字，下一轮就能解开
+      const x = pending[0]
+      try {
+        const tmp = `${x.link.targetPath}.automedia-moving`
+        await moveFile(x.link.targetPath, tmp)
+        setPath(x.link, tmp)
+      } catch (e) {
+        warnings.push(`${path.basename(x.link.targetPath)}：${errMsg(e)}`)
+        pending.shift()
+      }
+    }
+  }
+  for (const link of detail.links) {
+    try {
+      if (!(await exists(link.targetPath))) await createLink(link.linkMode, link.sourcePath, link.targetPath)
     } catch (e) {
       warnings.push(`${path.basename(link.targetPath)}：${errMsg(e)}`)
     }

@@ -60,7 +60,7 @@ function Layout(props: RouteSectionProps) {
         <nav class="mx-auto flex max-w-7xl items-center gap-1 px-4 py-2">
           <span class="mr-4 font-semibold">automedia</span>
           <A href="/" end class={link} activeClass="bg-slate-100 font-medium text-slate-900">
-            Media
+            媒体
           </A>
           <A href="/sources" class={link} activeClass="bg-slate-100 font-medium text-slate-900">
             来源

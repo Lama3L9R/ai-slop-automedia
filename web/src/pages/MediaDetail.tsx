@@ -9,7 +9,7 @@ import {
   type Settings,
 } from '@automedia/shared'
 import { A, useNavigate, useParams } from '@solidjs/router'
-import { For, Show, createEffect, createMemo, createResource, createSignal, on } from 'solid-js'
+import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on } from 'solid-js'
 import { createStore, reconcile, unwrap } from 'solid-js/store'
 import { api, upload } from '../api'
 import { Field, Section, baseName, toast, useAction } from '../ui'
@@ -48,6 +48,9 @@ export default function MediaDetailPage() {
   const [form, setForm] = createStore<Form>({ media: {} as MediaInput, seasons: [], episodes: [] })
   const [dirty, setDirty] = createSignal(false)
   const [moreCols, setMoreCols] = createSignal(false)
+  /** 当前季号 → 加载时的季号。保存时据此告诉服务端哪些季改了号，已导入的文件要跟着换季 */
+  const [seasonOrigin, setSeasonOrigin] = createSignal(new Map<number, number>())
+  let grid!: HTMLDivElement
 
   function load(d: Loaded) {
     const { id: _i, folderPath: _f, createdAt: _c, updatedAt: _u, ...media } = d.media
@@ -61,6 +64,7 @@ export default function MediaDetailPage() {
     episodes.sort((a, b) => a.season - b.season || a.number - b.number)
     seasons.sort((a, b) => a.number - b.number)
     setForm(reconcile({ media, seasons, episodes }))
+    setSeasonOrigin(new Map(seasons.map((s) => [s.number, s.number])))
     setDetail(d)
     setDirty(false)
     if (d.warnings?.length) toast.err(`磁盘同步有 ${d.warnings.length} 个问题：\n${d.warnings.join('\n')}`)
@@ -81,10 +85,18 @@ export default function MediaDetailPage() {
     return (setForm as (...a: unknown[]) => void)(...args)
   }) as typeof setForm
 
+  /** 已导入的文件记的是保存时的季号；页面上改过季号、还没保存时，要按新季号显示 */
+  const currentSeason = (orig: number) => {
+    for (const [cur, o] of seasonOrigin()) if (o === orig) return cur
+    return orig
+  }
   const linksOf = (season: number, number: number): Link[] =>
-    detail()?.links.filter((l) => l.season === season && l.episode === number) ?? []
+    detail()?.links.filter((l) => currentSeason(l.season) === season && l.episode === number) ?? []
   const videoCount = createMemo(() => detail()?.links.filter((l) => l.kind === 'video').length ?? 0)
-  const payload = () => structuredClone(unwrap(form))
+  const payload = () => ({
+    ...structuredClone(unwrap(form)),
+    seasonMoves: [...seasonOrigin()].filter(([cur, orig]) => cur !== orig).map(([cur, orig]) => ({ from: orig, to: cur })),
+  })
 
   const [save, saving] = useAction(async () => {
     load(await api<Loaded>(`/media/${params.id}`, { method: 'PUT', body: payload() }))
@@ -132,6 +144,67 @@ export default function MediaDetailPage() {
     if (!Number.isInteger(n) || n < 0) return toast.err('季号必须是非负整数')
     if (form.seasons.some((s) => s.number === n)) return toast.err(`第 ${n} 季已经存在`)
     edit('seasons', (list) => [...list, blankSeason(n)].sort((a, b) => a.number - b.number))
+  }
+
+  /** 改季号：这一季的所有集、已导入的文件一起换到新季号。返回是否成功。 */
+  function renumberSeason(from: number, raw: string): boolean {
+    const to = Number(raw.trim())
+    if (raw.trim() === '' || !Number.isInteger(to) || to < 0) return (toast.err('季号必须是非负整数'), false)
+    if (to === from) return true
+    if (form.seasons.some((s) => s.number === to))
+      return (toast.err(`第 ${to} 季已经存在。想对调的话，先把其中一季改成一个没用过的季号`), false)
+    batch(() => {
+      edit('episodes', (e) => e.season === from, 'season', to)
+      edit('seasons', (list) =>
+        list.map((s) => (s.number === from ? { ...s, number: to } : s)).sort((a, b) => a.number - b.number),
+      )
+      setSeasonOrigin((m) => {
+        const next = new Map(m)
+        const orig = next.get(from)
+        next.delete(from)
+        if (orig !== undefined) next.set(to, orig)
+        return next
+      })
+    })
+    return true
+  }
+
+  /**
+   * 剧集表格的键盘导航：Tab / Shift+Tab 和 ↑↓ 在同一列里上下移动（可以跨季），
+   * ←→ 在光标已经到文字开头 / 结尾时移到左右的格子。到表格边缘就交还给浏览器默认行为。
+   */
+  function onGridKey(e: KeyboardEvent) {
+    const el = e.target as HTMLInputElement | HTMLTextAreaElement
+    const col = el.dataset?.col
+    // isComposing：输入法选字时的方向键不能抢
+    if (!col || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return
+    let dRow = 0
+    let dCol = 0
+    if (e.key === 'Tab') dRow = e.shiftKey ? -1 : 1
+    else if (e.shiftKey) return
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const up = e.key === 'ArrowUp'
+      if (el instanceof HTMLTextAreaElement) {
+        // 多行文本：光标还能在行间移动时不跳格
+        const beyond = up ? el.value.slice(0, el.selectionStart) : el.value.slice(el.selectionEnd)
+        if (beyond.includes('\n')) return
+      }
+      dRow = up ? -1 : 1
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const left = e.key === 'ArrowLeft'
+      if (el.selectionStart !== el.selectionEnd) return
+      if (left ? el.selectionStart !== 0 : el.selectionEnd !== el.value.length) return
+      dCol = left ? -1 : 1
+    } else return
+
+    const cells = dRow
+      ? [...grid.querySelectorAll<HTMLInputElement>(`[data-col="${col}"]`)]
+      : [...(el.closest('tr')?.querySelectorAll<HTMLInputElement>('[data-col]') ?? [])]
+    const target = cells[cells.indexOf(el as HTMLInputElement) + dRow + dCol]
+    if (!target) return
+    e.preventDefault()
+    target.focus()
+    target.select()
   }
 
   const text = (key: keyof MediaInput) => ({
@@ -274,7 +347,8 @@ export default function MediaDetailPage() {
         <span class="text-xs text-slate-400">
           {form.episodes.length} 集，已导入 {videoCount()} 个视频
         </span>
-        <label class="ml-auto flex items-center gap-1 text-xs text-slate-500">
+        <span class="ml-auto hidden text-xs text-slate-400 md:inline">Tab / ↑↓ 上下移动，←→ 左右移动；季号可以直接改</span>
+        <label class="flex items-center gap-1 text-xs text-slate-500">
           <input type="checkbox" checked={moreCols()} onChange={(e) => setMoreCols(e.currentTarget.checked)} />
           显示简介和剧照列
         </label>
@@ -283,6 +357,7 @@ export default function MediaDetailPage() {
         </button>
       </div>
 
+      <div ref={grid} onKeyDown={onGridKey}>
       <For each={form.seasons} fallback={<p class="card p-6 text-center text-slate-400">还没有季。点「添加季」开始，或者直接导入文件。</p>}>
         {(season) => {
           const episodes = createMemo(() => form.episodes.filter((e) => e.season === season.number))
@@ -290,7 +365,22 @@ export default function MediaDetailPage() {
           return (
             <section class="card mb-4">
               <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2">
-                <span class="w-20 shrink-0 font-semibold">{season.number === 0 ? '特别篇 S00' : `第 ${season.number} 季`}</span>
+                <label class="flex shrink-0 items-center gap-1 font-semibold" title="改季号：这一季的集和已导入的文件会一起换到新季号（保存后生效）。特别篇 / OVA 用 0">
+                  第
+                  <input
+                    class="input input-sm w-12 text-center font-semibold"
+                    inputmode="numeric"
+                    value={season.number}
+                    onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                    onChange={(e) => {
+                      if (!renumberSeason(season.number, e.currentTarget.value)) e.currentTarget.value = String(season.number)
+                    }}
+                  />
+                  季
+                  <Show when={season.number === 0}>
+                    <span class="badge bg-slate-100 font-normal text-slate-500">特别篇</span>
+                  </Show>
+                </label>
                 <input
                   class="input input-sm w-48"
                   placeholder="季标题（如 完结篇）"
@@ -326,7 +416,13 @@ export default function MediaDetailPage() {
                   onClick={() => {
                     if (episodes().length && !confirm(`移除第 ${season.number} 季和它的 ${episodes().length} 集元数据？（已导入的文件不受影响）`)) return
                     edit('episodes', (list) => list.filter((e) => e.season !== season.number))
-                    edit('seasons', (list) => list.filter((s) => s.number !== season.number))
+                    const n = season.number
+                    edit('seasons', (list) => list.filter((s) => s.number !== n))
+                    setSeasonOrigin((m) => {
+                      const next = new Map(m)
+                      next.delete(n)
+                      return next
+                    })
                   }}
                 >
                   移除季
@@ -363,18 +459,26 @@ export default function MediaDetailPage() {
                               <td class="p-1">
                                 <input
                                   class="input input-sm"
+                                  data-col="title"
                                   placeholder={links().length ? '缺元数据，可在这里补' : ''}
                                   value={ep.title}
                                   onInput={(e) => set('title', e.currentTarget.value)}
                                 />
                               </td>
                               <td class="p-1">
-                                <input class="input input-sm" type="date" value={ep.airDate} onInput={(e) => set('airDate', e.currentTarget.value)} />
+                                <input
+                                  class="input input-sm"
+                                  data-col="airDate"
+                                  placeholder="YYYY-MM-DD"
+                                  value={ep.airDate}
+                                  onInput={(e) => set('airDate', e.currentTarget.value.trim())}
+                                />
                               </td>
                               <td class="p-1">
                                 <input
                                   class="input input-sm"
-                                  type="number"
+                                  data-col="runtime"
+                                  inputmode="decimal"
                                   placeholder="分钟"
                                   value={ep.runtime ?? ''}
                                   onInput={(e) => set('runtime', numOrNull(e.currentTarget.value))}
@@ -382,10 +486,10 @@ export default function MediaDetailPage() {
                               </td>
                               <Show when={moreCols()}>
                                 <td class="p-1">
-                                  <textarea class="input input-sm" rows={2} value={ep.overview} onInput={(e) => set('overview', e.currentTarget.value)} />
+                                  <textarea class="input input-sm" data-col="overview" rows={2} value={ep.overview} onInput={(e) => set('overview', e.currentTarget.value)} />
                                 </td>
                                 <td class="p-1">
-                                  <input class="input input-sm font-mono" value={ep.stillUrl} onInput={(e) => set('stillUrl', e.currentTarget.value)} />
+                                  <input class="input input-sm font-mono" data-col="stillUrl" value={ep.stillUrl} onInput={(e) => set('stillUrl', e.currentTarget.value)} />
                                 </td>
                               </Show>
                               <td class="p-1">
@@ -431,6 +535,7 @@ export default function MediaDetailPage() {
           )
         }}
       </For>
+      </div>
     </Show>
   )
 }

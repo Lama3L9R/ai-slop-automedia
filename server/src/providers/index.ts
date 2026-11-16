@@ -1,4 +1,5 @@
-import type { Episode, MediaDetail, MediaInput, MediaSaveInput, Season } from '@automedia/shared'
+import type { Episode, MediaDetail, MediaInput, Season } from '@automedia/shared'
+import type { SaveInput } from '../media/store'
 import { badRequest } from '../errors'
 import { tmdbProvider } from './tmdb'
 import type { MetadataProvider, ProviderMedia } from './types'
@@ -32,7 +33,7 @@ export function mergeProvider(
   current: MediaDetail,
   incoming: ProviderMedia,
   mode: 'fill' | 'overwrite',
-): MediaSaveInput {
+): SaveInput {
   const { id: _i, folderPath: _f, createdAt: _c, updatedAt: _u, ...cur } = current.media
   const inc: MediaInput = { ...incoming.media, kind: cur.kind, libraryId: cur.libraryId }
   const media = mode === 'overwrite' ? fill(inc, cur) : fill(cur, inc)

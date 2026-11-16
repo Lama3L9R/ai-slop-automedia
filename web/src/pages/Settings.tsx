@@ -75,7 +75,7 @@ export default function SettingsPage() {
         </button>
       </div>
 
-      <Section title="媒体库" desc="Emby 媒体库的根目录。每个 Media 归属其中一个，导入时在这下面按 Emby 规则建目录。">
+      <Section title="媒体库" desc="Emby 媒体库的根目录。每个媒体归属其中一个，导入时在这下面按 Emby 规则建目录。">
         <For each={s.libraries} fallback={<p class="mb-3 text-slate-400">还没有媒体库，导入前至少要加一个。</p>}>
           {(lib, i) => (
             <div class="mb-2 flex gap-2">
@@ -249,7 +249,7 @@ export default function SettingsPage() {
           hint="可用变量：${path} 相对路径  ${fileName}  ${dir}  ${ext}  ${size}  ${sizeBytes}  ${index}"
         />
         <Template
-          label="剧集行模版（Media 里每个已知的集一行）"
+          label="剧集行模版（媒体里每个已知的集一行）"
           rows={2}
           value={s.ai.episodeLine}
           fallback={DEFAULT_EPISODE_LINE}

@@ -77,7 +77,7 @@ export function registerRoutes(app: FastifyInstance) {
     const current = getMediaDetail(id)
     const provider = getProvider('tmdb')
     const pid = await provider.resolveId(current.media)
-    if (!pid) throw badRequest('这个 Media 没有可用的外部 ID（TMDB / TVDB / IMDb），无法从上游刷新')
+    if (!pid) throw badRequest('这个媒体没有可用的外部 ID（TMDB / TVDB / IMDb），无法从上游刷新')
     saveMedia(id, MediaSaveInput.parse(mergeProvider(current, await provider.fetch(current.media.kind, pid), mode)))
     const { warnings } = await syncMedia(id)
     return { ...getMediaDetail(id), warnings }

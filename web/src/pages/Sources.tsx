@@ -194,7 +194,7 @@ function Directories() {
 
       <Section
         title="上传的字幕"
-        desc="压缩包（zip / 7z / rar）或零散字幕文件，解压后保存在设置的字幕目录里。也可以在某个 Media 的页面里上传，会自动归到它名下。"
+        desc="压缩包（zip / 7z / rar）或零散字幕文件，解压后保存在设置的字幕目录里。也可以在某个媒体的页面里上传，会自动归到它名下。"
         actions={
           <>
             <input

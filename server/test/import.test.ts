@@ -433,6 +433,61 @@ describe('接手 Sonarr 导入过的媒体库', () => {
   })
 })
 
+describe('改季号', () => {
+  it('已导入的文件跟着换季，两季对调也能解开', async () => {
+    const id = createMedia(
+      MediaSaveInput.parse({
+        media: { title: 'Renumber', libraryId: 'anime' },
+        episodes: [{ season: 2, number: 1, title: '本该是第三季' }],
+      }),
+    )
+    const res = await executeImport(
+      request(id, {
+        sourceRef: 'renumber',
+        items: [
+          { path: file('[VCB-Studio] ReLIFE [09].mkv'), season: 2, episode: 1, kind: 'video' },
+          { path: file('[VCB-Studio] ReLIFE [10].mkv'), season: 3, episode: 1, kind: 'video' },
+          { path: file('[VCB-Studio] ReLIFE [01].sc.ass'), season: 2, episode: 1, kind: 'subtitle', suffix: 'chs' },
+        ],
+      }),
+    )
+    expect(res.items.every((r) => r.done)).toBe(true)
+    const dir = path.join(lib, 'Renumber')
+    const media = { title: 'Renumber', libraryId: 'anime' }
+
+    // 第 2 季 ↔ 第 3 季
+    saveMedia(
+      id,
+      MediaSaveInput.parse({
+        media,
+        episodes: [{ season: 3, number: 1, title: '本该是第三季' }],
+        seasonMoves: [
+          { from: 2, to: 3 },
+          { from: 3, to: 2 },
+        ],
+      }),
+    )
+    expect((await syncMedia(id)).warnings).toEqual([])
+    expect(await read(path.join(dir, 'Season 03', 'Renumber - S03E01.mkv'))).toBe('ep9')
+    expect(await read(path.join(dir, 'Season 03', 'Renumber - S03E01.chs.ass'))).toBe('sub-sc')
+    expect(await read(path.join(dir, 'Season 03', 'Renumber - S03E01.nfo'))).toContain('<title>本该是第三季</title>')
+    expect(await read(path.join(dir, 'Season 02', 'Renumber - S02E01.mkv'))).toBe('ep10')
+    expect((await fs.readdir(path.join(dir, 'Season 02'))).sort()).toEqual(['Renumber - S02E01.mkv', 'Renumber - S02E01.nfo', 'season.nfo'])
+
+    // 第 3 季并进第 2 季会让同一集有两个视频 → 拒绝，什么都不改
+    expect(() => saveMedia(id, MediaSaveInput.parse({ media, seasonMoves: [{ from: 3, to: 2 }] }))).toThrow(/两个同类文件/)
+    expect(getMediaDetail(id).links.map((l) => l.season).sort()).toEqual([2, 3, 3])
+
+    // 第 2 季挪到一个空的季号
+    saveMedia(id, MediaSaveInput.parse({ media, seasonMoves: [{ from: 2, to: 5 }] }))
+    await syncMedia(id)
+    expect(await read(path.join(dir, 'Season 05', 'Renumber - S05E01.mkv'))).toBe('ep10')
+    expect(await has(path.join(dir, 'Season 02'))).toBe(false)
+    await deleteMedia(id)
+    expect(await has(dir)).toBe(false)
+  })
+})
+
 describe('HTTP', () => {
   it('密码作为 Bearer token', async () => {
     const app = await buildApp({ password: 'secret', serveWeb: false })

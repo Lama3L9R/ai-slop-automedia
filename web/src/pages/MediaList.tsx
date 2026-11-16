@@ -56,7 +56,7 @@ function NewMediaModal(props: { onClose: () => void }) {
     `px-3 py-1.5 border-b-2 ${active ? 'border-indigo-600 font-medium text-indigo-700' : 'border-transparent text-slate-500'}`
 
   return (
-    <Modal title="新建 Media" onClose={props.onClose} wide>
+    <Modal title="新建媒体" onClose={props.onClose} wide>
       <div class="mb-4 flex gap-2 border-b border-slate-200">
         <button class={tabClass(tab() === 'provider')} onClick={() => setTab('provider')}>
           从 TMDB 导入
@@ -170,7 +170,7 @@ export default function MediaListPage() {
         <input class="input max-w-xs" placeholder="搜索标题" value={q()} onInput={(e) => setQ(e.currentTarget.value)} />
         <span class="text-xs text-slate-400">{filtered().length} 个</span>
         <button class="btn btn-primary ml-auto" onClick={() => setCreating(true)}>
-          ＋ 新建 Media
+          ＋ 新建媒体
         </button>
       </div>
 
@@ -180,7 +180,7 @@ export default function MediaListPage() {
             each={filtered()}
             fallback={
               <p class="col-span-full py-16 text-center text-slate-400">
-                {list()?.length ? '没有匹配的 Media。' : '还没有 Media。先去「设置」加一个媒体库，再点右上角新建。'}
+                {list()?.length ? '没有匹配的媒体。' : '还没有媒体。先去「设置」加一个媒体库，再点右上角新建。'}
               </p>
             }
           >
