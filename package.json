@@ -1,0 +1,22 @@
+{
+  "name": "automedia",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.5.2",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "pnpm :web:build && pnpm :server:start",
+    ":dev": "pnpm -r --parallel run dev",
+    ":build": "pnpm :web:build",
+    ":typecheck": "pnpm -r run typecheck",
+    ":test": "pnpm :server:test",
+    ":server:dev": "pnpm --filter @automedia/server run dev",
+    ":server:start": "pnpm --filter @automedia/server run start",
+    ":server:test": "pnpm --filter @automedia/server run test",
+    ":server:typecheck": "pnpm --filter @automedia/server run typecheck",
+    ":server:db:g": "pnpm --filter @automedia/server run db:g",
+    ":web:dev": "pnpm --filter @automedia/web run dev",
+    ":web:build": "pnpm --filter @automedia/web run build",
+    ":web:typecheck": "pnpm --filter @automedia/web run typecheck"
+  }
+}

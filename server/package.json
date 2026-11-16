@@ -1,0 +1,32 @@
+{
+  "name": "@automedia/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "db:g": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@automedia/shared": "workspace:*",
+    "@fastify/multipart": "^10.1.8",
+    "@fastify/static": "^10.1.11",
+    "better-sqlite3": "^13.2.0",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.12.8",
+    "undici": "^8.12.4",
+    "yauzl": "^3.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.6",
+    "@types/yauzl": "^3.4.0",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
