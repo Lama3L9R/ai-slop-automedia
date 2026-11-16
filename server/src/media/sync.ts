@@ -7,7 +7,8 @@ import { errMsg } from '../errors'
 import { findLibrary, getSettings } from '../settings'
 import { createLink, exists, isInside, moveFile, pruneEmptyDirs, removeFile } from '../util/fs'
 import { extFetch } from '../util/http'
-import { buildLayout, type Layout } from './layout'
+import { discoverSeasonDirs, renameSidecars } from './existing'
+import { buildLayout, mediaFolderName, type Layout } from './layout'
 import { episodeNfo, movieNfo, seasonNfo, tvshowNfo } from './nfo'
 import { getLinks, getMediaDetail } from './store'
 
@@ -130,8 +131,7 @@ async function doSync(id: number): Promise<SyncResult> {
     return { warnings }
   }
 
-  const layout = buildLayout(media, detail.episodes, detail.links)
-  const dir = path.join(lib.path, layout.folderName)
+  const dir = path.join(lib.path, mediaFolderName(media))
   const oldDir = media.folderPath
 
   // 1. 目录整体改名（保留目录里不归本工具管的文件）
@@ -161,6 +161,17 @@ async function doSync(id: number): Promise<SyncResult> {
   }
 
   // 2. 逐个链接对齐到期望路径，丢失的重新创建
+  // 已有的季文件夹（比如 Sonarr 建的「Season 1」）沿用，不另建「Season 01」
+  const layout = buildLayout(media, detail.episodes, detail.links, await discoverSeasonDirs(dir))
+  const managed = new Set([
+    ...detail.links.map((l) => l.targetPath),
+    ...d
+      .select()
+      .from(schema.artifacts)
+      .where(eq(schema.artifacts.mediaId, id))
+      .all()
+      .map((a) => a.path),
+  ])
   for (const link of detail.links) {
     const want = path.join(dir, layout.linkRel(link))
     try {
@@ -168,6 +179,8 @@ async function doSync(id: number): Promise<SyncResult> {
         if (await exists(link.targetPath)) {
           if (await exists(want)) throw new Error(`目标已存在：${want}`)
           await moveFile(link.targetPath, want)
+          // 视频旁边不归本工具管的字幕等附属文件跟着改名
+          if (link.kind === 'video') await renameSidecars(link.targetPath, want, (p) => managed.has(p))
         }
         d.update(schema.links).set({ targetPath: want }).where(eq(schema.links.id, link.id)).run()
         link.targetPath = want

@@ -11,6 +11,7 @@ import { parseItems, render } from '../src/ai/suggest'
 import { buildApp } from '../src/app'
 import { openDb } from '../src/db'
 import { executeImport, planImport } from '../src/import/engine'
+import { parseEpisodes } from '../src/media/existing'
 import { createMedia, deleteMedia, getMediaDetail, removeLinks, saveMedia } from '../src/media/store'
 import { imagesIdle, syncMedia } from '../src/media/sync'
 import { saveSettings } from '../src/settings'
@@ -346,6 +347,89 @@ describe('字幕上传', () => {
     // 同名再传一次不会覆盖
     const again = await saveUpload(parts(), relife)
     expect(again.path).toBe(path.join(subs, 'ReLIFE', 'ReLIFE 字幕 (2)'))
+  })
+})
+
+describe('接手 Sonarr 导入过的媒体库', () => {
+  it('从文件名解析集号', () => {
+    expect(parseEpisodes('Show - S01E01 - Title Bluray-1080p.mkv')).toEqual([{ season: 1, episode: 1 }])
+    expect(parseEpisodes('Show - S01E01-E03 - Title.mkv').map((s) => s.episode)).toEqual([1, 2, 3])
+    expect(parseEpisodes('Show - S01E05E06.mkv').map((s) => s.episode)).toEqual([5, 6])
+    expect(parseEpisodes('Show - S01E05-06.mkv').map((s) => s.episode)).toEqual([5, 6])
+    expect(parseEpisodes('Show - S02E07 - 031 - Title.mkv')).toEqual([{ season: 2, episode: 7 }])
+    expect(parseEpisodes('Show.S01E02-1080p.mkv')).toEqual([{ season: 1, episode: 2 }])
+    expect(parseEpisodes('Show - 07 [1080p].mkv')).toEqual([])
+  })
+
+  it('接管已有目录，沿用季文件夹，按集替换，不碰没重新导入的集', async () => {
+    const id = createMedia(
+      MediaSaveInput.parse({ media: { title: 'Sonarr Show', year: 2020, tvdbId: '777', libraryId: 'anime' } }),
+    )
+    // Sonarr 的默认命名：目录没有 ID 标记，季文件夹是「Season 1」，文件名带集标题和画质
+    const old = path.join(lib, 'Sonarr Show (2020)')
+    const s1 = path.join(old, 'Season 1')
+    await fs.mkdir(s1, { recursive: true })
+    await fs.mkdir(path.join(lib, 'Sonarr Show 2 (2021)')) // 名字相近的别的作品，不能被认错
+    // E07：和源文件内容相同（Sonarr 跨盘拷过来的副本）
+    await fs.copyFile(file('[VCB-Studio] ReLIFE [07].mkv'), path.join(s1, 'Sonarr Show - S01E07 - Title Bluray-1080p.mkv'))
+    await fs.writeFile(path.join(s1, 'Sonarr Show - S01E07 - Title Bluray-1080p.zh.ass'), 'bazarr')
+    await fs.writeFile(path.join(s1, 'Sonarr Show - S01E07 - Title Bluray-1080p.nfo'), '<sonarr/>')
+    // E08：另一个版本，大小不同
+    await fs.writeFile(path.join(s1, 'Sonarr Show - S01E08 - Title WEBDL-720p.mkv'), 'a different release')
+    // E09：这次不重新导入
+    await fs.writeFile(path.join(s1, 'Sonarr Show - S01E09 - Title.mkv'), 'untouched')
+    await fs.writeFile(path.join(old, 'tvshow.nfo'), '<sonarr/>')
+
+    const items = [7, 8].map((n) => ({
+      path: file(`[VCB-Studio] ReLIFE [0${n}].mkv`),
+      season: 1,
+      episode: n,
+      kind: 'video' as const,
+    }))
+    const dir = path.join(lib, 'Sonarr Show (2020) [tvdbid=777]')
+    const plan = await planImport(request(id, { sourceRef: 'sonarr', items }))
+    expect(plan.adopt).toEqual({ from: old, to: dir })
+    expect(plan.items.map((i) => i.status)).toEqual(['replace', 'error'])
+    expect(plan.items[0].target).toBe(path.join(dir, 'Season 1', 'Sonarr Show - S01E07.mkv'))
+    expect(plan.items[0].removes).toEqual([path.join(s1, 'Sonarr Show - S01E07 - Title Bluray-1080p.mkv')])
+    expect(plan.items[1].message).toContain('大小不同')
+    const skip = await planImport(request(id, { sourceRef: 'sonarr', items, existing: 'skip' }))
+    expect(skip.items.map((i) => i.status)).toEqual(['error', 'error'])
+    expect(await has(old)).toBe(true) // 预览不动磁盘
+
+    const res = await executeImport(request(id, { sourceRef: 'sonarr', items }))
+    expect(res.items.map((r) => r.done)).toEqual([true, false])
+    expect(res.warnings).toEqual([])
+    expect(await has(old)).toBe(false)
+    expect((await fs.readdir(dir)).sort()).toEqual(['Season 1', 'tvshow.nfo'])
+    expect((await fs.readdir(path.join(dir, 'Season 1'))).sort()).toEqual(
+      [
+        'Sonarr Show - S01E07.mkv',
+        'Sonarr Show - S01E07.nfo',
+        'Sonarr Show - S01E07.zh.ass',
+        'Sonarr Show - S01E08 - Title WEBDL-720p.mkv',
+        'Sonarr Show - S01E09 - Title.mkv',
+        'season.nfo',
+      ].sort(),
+    )
+    // Bazarr 的字幕跟着视频改了名，NFO 被本工具的内容覆盖
+    expect(await read(path.join(dir, 'Season 1', 'Sonarr Show - S01E07.zh.ass'))).toBe('bazarr')
+    expect(await read(path.join(dir, 'Season 1', 'Sonarr Show - S01E07.nfo'))).toContain('<episodedetails>')
+    expect(await read(path.join(dir, 'tvshow.nfo'))).toContain('<title>Sonarr Show</title>')
+    expect(getMediaDetail(id).media.folderPath).toBe(dir)
+
+    const forced = await executeImport(request(id, { sourceRef: 'sonarr', existing: 'force', items: [items[1]] }))
+    expect(forced.items[0].done).toBe(true)
+    expect(await has(path.join(dir, 'Season 1', 'Sonarr Show - S01E08 - Title WEBDL-720p.mkv'))).toBe(false)
+    expect(await read(path.join(dir, 'Season 1', 'Sonarr Show - S01E08.mkv'))).toBe('ep8')
+
+    // 删除 Media 只带走本工具创建的东西
+    await deleteMedia(id)
+    expect((await fs.readdir(path.join(dir, 'Season 1'))).sort()).toEqual(
+      ['Sonarr Show - S01E07.zh.ass', 'Sonarr Show - S01E09 - Title.mkv'].sort(),
+    )
+    await fs.rm(dir, { recursive: true })
+    await fs.rm(path.join(lib, 'Sonarr Show 2 (2021)'), { recursive: true })
   })
 })
 

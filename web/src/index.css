@@ -1,17 +1,123 @@
 @import 'tailwindcss';
 
+/*
+ * 暗色主题（只有这一套，不做切换）。
+ * 做法：把用到的色阶整体倒过来 —— 组件里写的 bg-white / slate-50 / emerald-100 这些「浅色」类名，
+ * 在这里被重新定义成对应的深色值，所以各个页面的 class 不需要改。
+ * 约定：slate-50 是页面底色（最深），white 是卡片 / 输入框，slate-100 是悬停，数字越大越亮，slate-800 是正文。
+ */
+@theme {
+  --color-white: #131a26;
+  --color-slate-50: #0b0f17;
+  --color-slate-100: #1c2533;
+  --color-slate-200: #263143;
+  --color-slate-300: #364357;
+  --color-slate-400: #6b7a90;
+  --color-slate-500: #8a98ad;
+  --color-slate-600: #a9b5c7;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #f1f5f9;
+  --color-slate-950: #f8fafc;
+
+  --color-emerald-50: oklch(26.2% 0.051 172.552);
+  --color-emerald-100: oklch(37.8% 0.077 168.94);
+  --color-emerald-200: oklch(43.2% 0.095 166.913);
+  --color-emerald-300: oklch(50.8% 0.118 165.612);
+  --color-emerald-400: oklch(59.6% 0.145 163.225);
+  --color-emerald-500: oklch(69.6% 0.17 162.48);
+  --color-emerald-600: oklch(76.5% 0.177 163.223);
+  --color-emerald-700: oklch(84.5% 0.143 164.978);
+  --color-emerald-800: oklch(90.5% 0.093 164.15);
+  --color-emerald-900: oklch(95% 0.052 163.051);
+  --color-emerald-950: oklch(97.9% 0.021 166.113);
+
+  --color-sky-50: oklch(29.3% 0.066 243.157);
+  --color-sky-100: oklch(39.1% 0.09 240.876);
+  --color-sky-200: oklch(44.3% 0.11 240.79);
+  --color-sky-300: oklch(50% 0.134 242.749);
+  --color-sky-400: oklch(58.8% 0.158 241.966);
+  --color-sky-500: oklch(68.5% 0.169 237.323);
+  --color-sky-600: oklch(74.6% 0.16 232.661);
+  --color-sky-700: oklch(82.8% 0.111 230.318);
+  --color-sky-800: oklch(90.1% 0.058 230.902);
+  --color-sky-900: oklch(95.1% 0.026 236.824);
+  --color-sky-950: oklch(97.7% 0.013 236.62);
+
+  --color-violet-50: oklch(28.3% 0.141 291.089);
+  --color-violet-100: oklch(38% 0.189 293.745);
+  --color-violet-200: oklch(43.2% 0.232 292.759);
+  --color-violet-300: oklch(49.1% 0.27 292.581);
+  --color-violet-400: oklch(54.1% 0.281 293.009);
+  --color-violet-500: oklch(60.6% 0.25 292.717);
+  --color-violet-600: oklch(70.2% 0.183 293.541);
+  --color-violet-700: oklch(81.1% 0.111 293.571);
+  --color-violet-800: oklch(89.4% 0.057 293.283);
+  --color-violet-900: oklch(94.3% 0.029 294.588);
+  --color-violet-950: oklch(96.9% 0.016 293.756);
+
+  --color-indigo-50: oklch(25.7% 0.09 281.288);
+  --color-indigo-100: oklch(35.9% 0.144 278.697);
+  --color-indigo-200: oklch(39.8% 0.195 277.366);
+  --color-indigo-300: oklch(45.7% 0.24 277.023);
+  --color-indigo-400: oklch(51.1% 0.262 276.966);
+  --color-indigo-500: oklch(58.5% 0.233 277.117);
+  --color-indigo-600: oklch(67.3% 0.182 276.935);
+  --color-indigo-700: oklch(78.5% 0.115 274.713);
+  --color-indigo-800: oklch(87% 0.065 274.039);
+  --color-indigo-900: oklch(93% 0.034 272.788);
+  --color-indigo-950: oklch(96.2% 0.018 272.314);
+
+  --color-red-50: oklch(25.8% 0.092 26.042);
+  --color-red-100: oklch(39.6% 0.141 25.723);
+  --color-red-200: oklch(44.4% 0.177 26.899);
+  --color-red-300: oklch(50.5% 0.213 27.518);
+  --color-red-400: oklch(57.7% 0.245 27.325);
+  --color-red-500: oklch(63.7% 0.237 25.331);
+  --color-red-600: oklch(70.4% 0.191 22.216);
+  --color-red-700: oklch(80.8% 0.114 19.571);
+  --color-red-800: oklch(88.5% 0.062 18.334);
+  --color-red-900: oklch(93.6% 0.032 17.717);
+  --color-red-950: oklch(97.1% 0.013 17.38);
+
+  --color-amber-50: oklch(27.9% 0.077 45.635);
+  --color-amber-100: oklch(41.4% 0.112 45.904);
+  --color-amber-200: oklch(47.3% 0.137 46.201);
+  --color-amber-300: oklch(55.5% 0.163 48.998);
+  --color-amber-400: oklch(66.6% 0.179 58.318);
+  --color-amber-500: oklch(76.9% 0.188 70.08);
+  --color-amber-600: oklch(82.8% 0.189 84.429);
+  --color-amber-700: oklch(87.9% 0.169 91.605);
+  --color-amber-800: oklch(92.4% 0.12 95.746);
+  --color-amber-900: oklch(96.2% 0.059 95.617);
+  --color-amber-950: oklch(98.7% 0.022 95.277);
+}
+
 @layer base {
+  html {
+    /* 让原生控件（下拉框、日期选择、复选框、滚动条）也用暗色 */
+    color-scheme: dark;
+  }
   body {
     @apply bg-slate-50 text-sm text-slate-800;
+  }
+  ::placeholder {
+    color: var(--color-slate-400);
   }
 }
 
 @layer components {
   .btn {
-    @apply inline-flex cursor-pointer items-center justify-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium whitespace-nowrap text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex cursor-pointer items-center justify-center gap-1 rounded-md border border-slate-300 bg-slate-100 px-3 py-1.5 text-sm font-medium whitespace-nowrap text-slate-700 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50;
   }
+  /* 主按钮用固定的颜色值：深色底上要的是「亮色块 + 白字」，不能跟着倒过来的色阶走 */
   .btn-primary {
-    @apply border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700;
+    border-color: #6366f1;
+    background-color: #4f46e5;
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background-color: #6366f1;
   }
   .btn-danger {
     @apply border-red-300 text-red-700 hover:bg-red-50;
@@ -20,7 +126,7 @@
     @apply px-2 py-0.5 text-xs;
   }
   .input {
-    @apply w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus:border-indigo-500 focus:outline-none;
+    @apply w-full rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5 text-sm text-slate-800 focus:border-indigo-500 focus:outline-none;
   }
   .input-sm {
     @apply px-1.5 py-0.5 text-xs;

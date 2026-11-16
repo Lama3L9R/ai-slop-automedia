@@ -18,6 +18,9 @@ export type TorrentState = z.infer<typeof TorrentState>
 export const SourceType = z.enum(['torrent', 'dir'])
 export type SourceType = z.infer<typeof SourceType>
 
+export const ExistingMode = z.enum(['skip', 'safe', 'force'])
+export type ExistingMode = z.infer<typeof ExistingMode>
+
 // ───────────────────────── AI 默认模版 ─────────────────────────
 
 export const DEFAULT_FILE_LINE = '${path} | ${size}'
@@ -305,6 +308,13 @@ export const ImportRequest = z.object({
   replaceSource: z.boolean().default(false),
   /** 来源是种子时，导入成功后标记为已导入 */
   markImported: z.boolean().default(true),
+  /**
+   * 媒体库里已经有这一集的文件、且不是本工具创建的（Sonarr 导入的、手动放的）时怎么办：
+   * - skip：不动它，这个文件不导入
+   * - safe：只在确定不会丢数据时替换（已有文件是链接，或与源文件大小相同的副本）
+   * - force：一律替换
+   */
+  existing: ExistingMode.default('safe'),
 })
 export type ImportRequest = z.infer<typeof ImportRequest>
 
@@ -315,9 +325,17 @@ export interface PlanItem {
   kind: FileKind
   suffix: string
   target: string
-  /** ok = 新建；replace = 会替换本工具之前创建的链接；error = 无法导入 */
+  /** ok = 新建；replace = 会替换已有的文件 / 链接；error = 无法导入 */
   status: 'ok' | 'replace' | 'error'
   message: string
+  /** 会被删除的、不是本工具创建的已有文件（当前磁盘上的路径） */
+  removes: string[]
+}
+
+export interface ImportPlan {
+  items: PlanItem[]
+  /** 媒体库里已有这部作品的目录（如 Sonarr 建的）：导入时会接管它并改成本工具的命名 */
+  adopt: { from: string; to: string } | null
 }
 
 export interface ImportResult {

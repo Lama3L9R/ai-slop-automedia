@@ -8,6 +8,7 @@ import {
   RefreshInput,
   SourceType,
   TorrentStateInput,
+  type ImportPlan,
 } from '@automedia/shared'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -122,7 +123,10 @@ export function registerRoutes(app: FastifyInstance) {
   })
 
   // ── 导入 ──
-  app.post('/api/import/preview', async (req) => (await planImport(ImportRequest.parse(req.body))).items)
+  app.post('/api/import/preview', async (req): Promise<ImportPlan> => {
+    const { items, adopt } = await planImport(ImportRequest.parse(req.body))
+    return { items, adopt }
+  })
   app.post('/api/import/execute', async (req) => executeImport(ImportRequest.parse(req.body)))
 
   // ── 字幕上传 ──

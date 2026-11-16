@@ -104,7 +104,8 @@ export default function SettingsPage() {
         <button
           class="btn"
           onClick={() =>
-            setS('libraries', (list) => [...list, { id: crypto.randomUUID().slice(0, 8), name: '', path: '' }])
+            // 不能用 crypto.randomUUID：它只在 HTTPS / localhost 下存在，局域网 IP 走 HTTP 访问时是 undefined
+            setS('libraries', (list) => [...list, { id: Math.random().toString(36).slice(2, 10), name: '', path: '' }])
           }
         >
           ＋ 添加媒体库

@@ -4,11 +4,12 @@ import {
   naturalCompare,
   pad2,
   type AiSuggestResult,
+  type ExistingMode,
+  type ImportPlan,
   type ImportItem,
   type ImportResult,
   type LinkMode,
   type MediaListItem,
-  type PlanItem,
   type Settings,
   type SourceTree,
   type TreeNode,
@@ -234,7 +235,8 @@ export default function WizardPage() {
   const [replaceOverride, setReplace] = createSignal<boolean | null>(null)
   const replaceSource = () => replaceOverride() ?? hasPrior()
   const [markImported, setMarkImported] = createSignal(true)
-  const [plan, setPlan] = createSignal<PlanItem[] | null>(null)
+  const [existing, setExisting] = createSignal<ExistingMode>('safe')
+  const [plan, setPlan] = createSignal<ImportPlan | null>(null)
   const [result, setResult] = createSignal<ImportResult | null>(null)
 
   function buildRequest() {
@@ -257,11 +259,12 @@ export default function WizardPage() {
       items,
       replaceSource: replaceSource(),
       markImported: markImported(),
+      existing: existing(),
     }
   }
   const [preview, previewing] = useAction(async () => {
     setResult(null)
-    setPlan(await api<PlanItem[]>('/import/preview', { body: buildRequest() }))
+    setPlan(await api<ImportPlan>('/import/preview', { body: buildRequest() }))
   })
   const [execute, executing] = useAction(async () => {
     const res = await api<ImportResult>('/import/execute', { body: buildRequest() })
@@ -272,7 +275,7 @@ export default function WizardPage() {
   const relOf = (p: string) => allFiles().find((n) => n.path === p)?.rel ?? baseName(p)
   /** 预览 / 结果按季集排序，有问题的排最前 */
   const shown = createMemo(() =>
-    [...(result()?.items ?? plan() ?? [])].sort(
+    [...(result()?.items ?? plan()?.items ?? [])].sort(
       (a, b) =>
         Number(b.status === 'error') - Number(a.status === 'error') ||
         a.season - b.season ||
@@ -504,6 +507,14 @@ export default function WizardPage() {
               重新导入（先清掉此来源之前的链接）
             </label>
           </Show>
+          <label class="flex items-center gap-1" title="媒体库里已经有这一集的文件、且不是本工具创建的（比如 Sonarr 导入的）时怎么处理">
+            <span class="text-xs text-slate-500">已有文件</span>
+            <select class="input w-56" value={existing()} onChange={(e) => setExisting(e.currentTarget.value as ExistingMode)}>
+              <option value="safe">替换（仅链接或同大小的副本）</option>
+              <option value="force">强制替换</option>
+              <option value="skip">保留，不导入这一集</option>
+            </select>
+          </label>
           <Show when={sourceType() === 'torrent'}>
             <label class="flex items-center gap-1">
               <input type="checkbox" checked={markImported()} onChange={(e) => setMarkImported(e.currentTarget.checked)} />
@@ -552,6 +563,13 @@ export default function WizardPage() {
             </Show>
           }
         >
+          <Show when={!result() && plan()?.adopt}>
+            <div class="mb-3 rounded bg-sky-50 p-2 text-xs text-sky-800">
+              媒体库里已经有这部作品的目录，导入时会接管它并改名（里面的其他文件原样保留）：
+              <div class="mt-1 font-mono break-all">{plan()!.adopt!.from}</div>
+              <div class="font-mono break-all">→ {plan()!.adopt!.to}</div>
+            </div>
+          </Show>
           <Show when={result()?.warnings.length}>
             <div class="mb-3 rounded bg-amber-50 p-2 text-xs whitespace-pre-wrap text-amber-800">{result()!.warnings.join('\n')}</div>
           </Show>
@@ -585,7 +603,7 @@ export default function WizardPage() {
                       >
                         {it.status === 'error' ? '跳过' : result() ? '完成' : it.status === 'replace' ? '替换' : '新建'}
                       </span>
-                      <div class="mt-0.5 text-slate-500">{it.message}</div>
+                      <div class="mt-0.5 break-all whitespace-pre-wrap text-slate-500">{it.message}</div>
                     </td>
                   </tr>
                 )}

@@ -78,7 +78,7 @@ export function Modal(props: {
   return (
     <Portal>
       <div
-        class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-10"
+        class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 sm:p-10"
         onClick={(e) => e.target === e.currentTarget && props.onClose()}
       >
         <div class="card flex max-h-full w-full flex-col shadow-xl" classList={{ 'max-w-5xl': props.wide, 'max-w-xl': !props.wide }}>

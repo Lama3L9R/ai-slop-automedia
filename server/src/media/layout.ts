@@ -56,8 +56,14 @@ export interface Layout {
 /**
  * @param episodes Media 的集元数据
  * @param slots    已有 / 即将创建的链接所占用的 (季, 集)，用来判断 movie 是否多片
+ * @param seasonDirs 磁盘上已有的季文件夹（季号 → 文件夹名），有就沿用，见 existing.ts
  */
-export function buildLayout(media: LayoutMedia, episodes: Episode[], slots: Slot[]): Layout {
+export function buildLayout(
+  media: LayoutMedia,
+  episodes: Episode[],
+  slots: Slot[],
+  seasonDirs?: Map<number, string>,
+): Layout {
   const title = sanitizeName(media.title)
   const yearTag = media.year ? ` (${media.year})` : ''
   const epMap = new Map(episodes.map((e) => [slotKey(e.season, e.number), e]))
@@ -68,7 +74,8 @@ export function buildLayout(media: LayoutMedia, episodes: Episode[], slots: Slot
   const ordered = [...all.values()].sort((a, b) => a.season - b.season || a.episode - b.episode)
   const multiFilm = media.kind === 'movie' && ordered.length > 1
 
-  const relDir = (season: number) => (media.kind === 'series' ? `Season ${pad2(season)}` : '')
+  const relDir = (season: number) =>
+    media.kind === 'series' ? (seasonDirs?.get(season) ?? `Season ${pad2(season)}`) : ''
 
   const baseName = (season: number, episode: number) => {
     if (media.kind === 'series') return `${title} - S${pad2(season)}E${pad2(episode)}`
