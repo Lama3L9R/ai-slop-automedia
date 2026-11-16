@@ -56,6 +56,8 @@ export async function planImport(req: ImportRequest): Promise<Plan> {
   const lib = findLibrary(media.libraryId)
   if (!lib) throw badRequest(`「${media.title}」还没有选择媒体库，请先在媒体页面设置`)
 
+  if (media.kind === 'comic') throw badRequest(`「${media.title}」是漫画，请从「来源」页用漫画导入向导`)
+
   const fromThisSource = (l: Link) => l.sourceType === req.sourceType && l.sourceRef === req.sourceRef
   const kept = req.replaceSource ? detail.links.filter((l) => !fromThisSource(l)) : detail.links
   const freed = new Set(
@@ -63,7 +65,9 @@ export async function planImport(req: ImportRequest): Promise<Plan> {
   )
 
   const { dir, scanDir, adopt } = await resolveDir(media, lib.path)
-  const layout = buildLayout(media, detail.episodes, [...kept, ...req.items], await discoverSeasonDirs(scanDir))
+  const layout = buildLayout(media, detail.episodes, [...kept, ...req.items], {
+    seasonDirs: await discoverSeasonDirs(scanDir),
+  })
   /** 期望路径 → 此刻磁盘上对应的路径（接管目录之前两者不同） */
   const onDisk = (p: string) => (scanDir === dir ? p : path.join(scanDir, path.relative(dir, p)))
   const keptByTarget = new Map(kept.map((l) => [norm(l.targetPath), l]))

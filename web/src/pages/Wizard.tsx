@@ -50,7 +50,9 @@ export default function WizardPage() {
     (q) => api<SourceTree>('/sources/tree', { query: q }),
   )
   const [mediaList] = createResource(async () =>
-    (await api<MediaListItem[]>('/media')).sort((a, b) => naturalCompare(a.title, b.title)),
+    (await api<MediaListItem[]>('/media'))
+      .filter((m) => m.kind !== 'comic')
+      .sort((a, b) => naturalCompare(a.title, b.title)),
   )
   const [settings] = createResource(() => api<Settings>('/settings'))
 

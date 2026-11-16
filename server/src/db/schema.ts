@@ -24,6 +24,7 @@ export const media = sqliteTable('media', {
   posterUrl: text('poster_url').notNull().default(''),
   fanartUrl: text('fanart_url').notNull().default(''),
   libraryId: text('library_id').notNull().default(''),
+  comicFormat: text('comic_format').notNull().default('images'),
   folderPath: text('folder_path').notNull().default(''),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
@@ -73,6 +74,8 @@ export const links = sqliteTable(
     sourcePath: text('source_path').notNull(),
     targetPath: text('target_path').notNull(),
     linkMode: text('link_mode').notNull(),
+    /** 漫画页在这一集里的顺序，从 1 开始；其他类型恒为 0 */
+    position: integer('position').notNull().default(0),
     createdAt: integer('created_at').notNull(),
   },
   (t) => [

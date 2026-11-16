@@ -2,7 +2,8 @@ import { A, Route, Router, type RouteSectionProps } from '@solidjs/router'
 import { Show, createSignal } from 'solid-js'
 import { api, password, setPassword } from './api'
 import MediaDetailPage from './pages/MediaDetail'
-import MediaListPage from './pages/MediaList'
+import ComicWizardPage from './pages/ComicWizard'
+import MediaListPage, { ComicListPage } from './pages/MediaList'
 import SettingsPage from './pages/Settings'
 import SourcesPage from './pages/Sources'
 import WizardPage from './pages/Wizard'
@@ -62,6 +63,9 @@ function Layout(props: RouteSectionProps) {
           <A href="/" end class={link} activeClass="bg-slate-100 font-medium text-slate-900">
             媒体
           </A>
+          <A href="/comics" class={link} activeClass="bg-slate-100 font-medium text-slate-900">
+            漫画
+          </A>
           <A href="/sources" class={link} activeClass="bg-slate-100 font-medium text-slate-900">
             来源
           </A>
@@ -85,7 +89,9 @@ export default function App() {
         <Router root={Layout}>
           <Route path="/" component={MediaListPage} />
           <Route path="/media/:id" component={MediaDetailPage} />
+          <Route path="/comics" component={ComicListPage} />
           <Route path="/sources" component={SourcesPage} />
+          <Route path="/import-comic" component={ComicWizardPage} />
           <Route path="/import" component={WizardPage} />
           <Route path="/settings" component={SettingsPage} />
         </Router>

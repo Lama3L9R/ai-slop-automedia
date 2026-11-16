@@ -1,7 +1,7 @@
 import type { Episode, LookupBy, MediaInput, MediaKind, ProviderSearchResult, Season } from '@automedia/shared'
 
 export interface ProviderMedia {
-  media: Omit<MediaInput, 'libraryId'>
+  media: Omit<MediaInput, 'libraryId' | 'comicFormat'>
   seasons: Season[]
   episodes: Episode[]
 }

@@ -1,4 +1,4 @@
-import { formatSize, type TorrentItem, type TorrentState } from '@automedia/shared'
+import { formatSize, naturalCompare, type TorrentItem, type TorrentState } from '@automedia/shared'
 import { A, useNavigate } from '@solidjs/router'
 import { For, Show, createMemo, createResource, createSignal } from 'solid-js'
 import { api, upload } from '../api'
@@ -35,12 +35,42 @@ function persisted(key: string, initial: boolean) {
 }
 
 const wizardUrl = (type: 'torrent' | 'dir', ref: string) => `/import?type=${type}&ref=${encodeURIComponent(ref)}`
+const comicWizardUrl = (type: 'torrent' | 'dir', ref: string) => `/import-comic?type=${type}&ref=${encodeURIComponent(ref)}`
+
+/** 分类下拉框里「全部」的取值（qB 里没有分类的种子，分类是空串，所以不能用空串表示全部） */
+const ALL = '*'
+const CATEGORY_KEY = 'automedia.category'
 
 function Torrents() {
   const [list, { refetch, mutate }] = createResource(() => api<TorrentItem[]>('/torrents'))
   const [q, setQ] = createSignal('')
   const [showImported, setShowImported] = persisted('automedia.showImported', true)
   const [showIgnored, setShowIgnored] = persisted('automedia.showIgnored', false)
+  const [categoryPick, setCategoryPick] = createSignal(
+    (() => {
+      try {
+        return localStorage.getItem(CATEGORY_KEY) ?? ALL
+      } catch {
+        return ALL
+      }
+    })(),
+  )
+  const pickCategory = (v: string) => {
+    setCategoryPick(v)
+    try {
+      localStorage.setItem(CATEGORY_KEY, v)
+    } catch {
+      /* ignore */
+    }
+  }
+  /** 列表里实际出现的分类和各自的数量 */
+  const categories = createMemo(() => {
+    const m = new Map<string, number>()
+    for (const t of list() ?? []) m.set(t.category, (m.get(t.category) ?? 0) + 1)
+    return [...m].sort((a, b) => naturalCompare(a[0], b[0]))
+  })
+  // 记住的分类已经不存在了（改了设置、种子删了）就当作「全部」，免得列表莫名其妙是空的
+  const category = () => (categories().some(([c]) => c === categoryPick()) ? categoryPick() : ALL)
 
   const counts = createMemo(() => {
     const c = { new: 0, imported: 0, ignored: 0 }
@@ -53,6 +83,7 @@ function Torrents() {
       (t) =>
         (showImported() || t.state !== 'imported') &&
         (showIgnored() || t.state !== 'ignored') &&
+        (category() === ALL || t.category === category()) &&
         (!k || t.name.toLowerCase().includes(k)),
     )
   })
@@ -74,6 +105,16 @@ function Torrents() {
     >
       <div class="mb-3 flex flex-wrap items-center gap-4">
         <input class="input max-w-xs" placeholder="搜索种子名" value={q()} onInput={(e) => setQ(e.currentTarget.value)} />
+        <select class="input w-44" value={category()} onChange={(e) => pickCategory(e.currentTarget.value)}>
+          <option value={ALL}>全部分类（{list()?.length ?? 0}）</option>
+          <For each={categories()}>
+            {([c, n]) => (
+              <option value={c}>
+                {c || '未分类'}（{n}）
+              </option>
+            )}
+          </For>
+        </select>
         <label class="flex items-center gap-1">
           <input type="checkbox" checked={showImported()} onChange={(e) => setShowImported(e.currentTarget.checked)} />
           显示已导入（{counts().imported}）
@@ -96,7 +137,7 @@ function Torrents() {
                 <th class="w-24 px-2 font-normal">分类</th>
                 <th class="w-20 px-2 text-right font-normal">大小</th>
                 <th class="w-24 px-2 font-normal">添加时间</th>
-                <th class="w-64 font-normal" />
+                <th class="w-80 font-normal" />
               </tr>
             </thead>
             <tbody>
@@ -130,6 +171,9 @@ function Torrents() {
                     <td class="py-1 text-right whitespace-nowrap">
                       <A class="btn btn-sm btn-primary" href={wizardUrl('torrent', t.hash)}>
                         {t.importedTo.length ? '重新导入' : '导入'}
+                      </A>{' '}
+                      <A class="btn btn-sm" href={comicWizardUrl('torrent', t.hash)} title="当作漫画导入：压缩包原地解压，图片链接进图片库">
+                        漫画
                       </A>{' '}
                       <Show
                         when={t.state === 'imported'}
@@ -188,6 +232,9 @@ function Directories() {
           </div>
           <button class="btn btn-primary" disabled={!dir().trim()} onClick={() => navigate(wizardUrl('dir', dir().trim()))}>
             打开向导
+          </button>
+          <button class="btn" disabled={!dir().trim()} onClick={() => navigate(comicWizardUrl('dir', dir().trim()))}>
+            漫画向导
           </button>
         </div>
       </Section>

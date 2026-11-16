@@ -1,8 +1,15 @@
 import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { fileKindOf, naturalCompare, type SourceTree, type SourceType, type TreeNode } from '@automedia/shared'
-import { eq } from 'drizzle-orm'
+import {
+  fileKindOf,
+  naturalCompare,
+  type PageImport,
+  type SourceTree,
+  type SourceType,
+  type TreeNode,
+} from '@automedia/shared'
+import { eq, sql } from 'drizzle-orm'
 import { db, schema } from '../db'
 import { badRequest } from '../errors'
 import { rowToLink } from '../media/store'
@@ -65,14 +72,26 @@ export async function sourceTree(type: SourceType, ref: string): Promise<SourceT
     name = path.basename(root)
   }
   const nodes = await readTree(root)
-  const links = db()
+  // 先用前缀在数据库里粗筛（漫画页可能有几万行），再用 isInside 精确判断
+  const under = db()
     .select({ link: schema.links, mediaTitle: schema.media.title })
     .from(schema.links)
     .innerJoin(schema.media, eq(schema.media.id, schema.links.mediaId))
+    .where(sql`substr(${schema.links.sourcePath}, 1, ${root.length}) = ${root}`)
     .all()
     .filter((r) => isInside(r.link.sourcePath, root))
     .map((r) => ({ ...rowToLink(r.link), mediaTitle: r.mediaTitle }))
-  return { type, ref, name, root, nodes, links }
+  const links = under.filter((l) => l.kind !== 'page')
+  const grouped = new Map<string, PageImport>()
+  for (const l of under) {
+    if (l.kind !== 'page') continue
+    const dir = path.dirname(l.sourcePath)
+    const k = `${dir}|${l.mediaId}|${l.season}|${l.episode}`
+    const cur = grouped.get(k) ?? { dir, mediaId: l.mediaId, mediaTitle: l.mediaTitle, season: l.season, episode: l.episode, count: 0 }
+    cur.count++
+    grouped.set(k, cur)
+  }
+  return { type, ref, name, root, nodes, links, pageImports: [...grouped.values()] }
 }
 
 export interface DirListing {

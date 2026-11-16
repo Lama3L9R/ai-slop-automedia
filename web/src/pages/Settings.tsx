@@ -128,6 +128,16 @@ export default function SettingsPage() {
           <Field label="字幕存放目录" hint="上传的字幕压缩包解压到这里，再链接进媒体库。">
             <PathInput value={s.subtitleDir} placeholder="/Volumes/Media/Subtitles" onChange={(v) => setS('subtitleDir', v)} />
           </Field>
+          <Field label="漫画默认形式" hint="新建漫画时的默认值，每部漫画可以在自己的页面里单独切换。CBZ 是打包（拷贝），不是链接。">
+            <select
+              class="input"
+              value={s.comicDefaultFormat}
+              onChange={(e) => setS('comicDefaultFormat', e.currentTarget.value as Settings['comicDefaultFormat'])}
+            >
+              <option value="images">图片文件夹（Emby 图片库）</option>
+              <option value="cbz">CBZ（Emby 书籍库）</option>
+            </select>
+          </Field>
         </div>
       </Section>
 

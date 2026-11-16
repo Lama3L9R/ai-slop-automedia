@@ -1,0 +1,1 @@
+ALTER TABLE `media` ADD `comic_format` text DEFAULT 'images' NOT NULL;

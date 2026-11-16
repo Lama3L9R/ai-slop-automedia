@@ -1,13 +1,15 @@
 import type {
+  ComicFormat,
   Episode,
-  FileKind,
   Link,
+  LinkKind,
   LinkMode,
   Media,
   MediaDetail,
   MediaKind,
   MediaListItem,
   MediaSaveInput,
+  PageCount,
   Season,
   SourceType,
 } from '@automedia/shared'
@@ -19,11 +21,15 @@ import { pruneEmptyDirs, removeFile } from '../util/fs'
 type MediaRow = typeof schema.media.$inferSelect
 type LinkRow = typeof schema.links.$inferSelect
 
-export const rowToMedia = (r: MediaRow): Media => ({ ...r, kind: r.kind as MediaKind })
+export const rowToMedia = (r: MediaRow): Media => ({
+  ...r,
+  kind: r.kind as MediaKind,
+  comicFormat: r.comicFormat as ComicFormat,
+})
 
 export const rowToLink = (r: LinkRow): Link => ({
   ...r,
-  kind: r.kind as FileKind,
+  kind: r.kind as LinkKind,
   sourceType: r.sourceType as SourceType,
   linkMode: r.linkMode as LinkMode,
 })
@@ -42,8 +48,15 @@ export function listMedia(): MediaListItem[] {
     .where(eq(schema.links.kind, 'video'))
     .groupBy(schema.links.mediaId)
     .all()
+  // 漫画：有页面的集数
+  const comics = d
+    .select({ mediaId: schema.links.mediaId, n: sql<number>`count(distinct ${schema.links.season} * 100000 + ${schema.links.episode})` })
+    .from(schema.links)
+    .where(eq(schema.links.kind, 'page'))
+    .groupBy(schema.links.mediaId)
+    .all()
   const epMap = new Map(eps.map((r) => [r.mediaId, r.n]))
-  const vidMap = new Map(vids.map((r) => [r.mediaId, r.n]))
+  const vidMap = new Map([...vids, ...comics].map((r) => [r.mediaId, r.n]))
   return d
     .select()
     .from(schema.media)
@@ -63,7 +76,13 @@ export function getLinks(mediaId: number): Link[] {
     .select()
     .from(schema.links)
     .where(eq(schema.links.mediaId, mediaId))
-    .orderBy(asc(schema.links.season), asc(schema.links.episode), asc(schema.links.kind), asc(schema.links.suffix))
+    .orderBy(
+      asc(schema.links.season),
+      asc(schema.links.episode),
+      asc(schema.links.kind),
+      asc(schema.links.position),
+      asc(schema.links.suffix),
+    )
     .all()
     .map(rowToLink)
 }
@@ -85,7 +104,16 @@ export function getMediaDetail(id: number): MediaDetail {
     .orderBy(asc(schema.episodes.season), asc(schema.episodes.number))
     .all()
     .map(({ mediaId: _m, ...e }) => e)
-  return { media, seasons, episodes, links: getLinks(id) }
+  const links = getLinks(id)
+  const counts = new Map<string, PageCount>()
+  for (const l of links) {
+    if (l.kind !== 'page') continue
+    const k = `${l.season}:${l.episode}`
+    const c = counts.get(k) ?? { season: l.season, episode: l.episode, count: 0 }
+    c.count++
+    counts.set(k, c)
+  }
+  return { media, seasons, episodes, links, pageCounts: [...counts.values()] }
 }
 
 /** 校验并补齐：集引用到的季自动建出来；同一 (季, 集) 不允许重复 */
@@ -150,7 +178,7 @@ export function saveMedia(id: number, input: SaveInput): void {
   const links = moves.size ? getLinks(id) : []
   const taken = new Set<string>()
   for (const l of links) {
-    const key = `${moves.get(l.season) ?? l.season}:${l.episode}:${l.kind}:${l.suffix}:${l.ext}`
+    const key = `${moves.get(l.season) ?? l.season}:${l.episode}:${l.kind}:${l.suffix}:${l.ext}:${l.position}`
     if (taken.has(key))
       throw badRequest(
         `改季号之后，第 ${moves.get(l.season) ?? l.season} 季第 ${l.episode} 集会有两个同类文件。请先移除其中一个已导入的文件`,

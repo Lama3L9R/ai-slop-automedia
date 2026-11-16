@@ -1,4 +1,5 @@
 import type {
+  ComicFormat,
   LookupBy,
   MediaDetail,
   MediaKind,
@@ -22,13 +23,15 @@ export function Poster(props: { url: string; class?: string }) {
   )
 }
 
-function NewMediaModal(props: { onClose: () => void }) {
+function NewMediaModal(props: { comic?: boolean; onClose: () => void }) {
   const navigate = useNavigate()
   const [settings] = createResource(() => api<Settings>('/settings'))
-  const [tab, setTab] = createSignal<'provider' | 'manual'>('provider')
-  const [kind, setKind] = createSignal<MediaKind>('series')
+  const [tab, setTab] = createSignal<'provider' | 'manual'>(props.comic ? 'manual' : 'provider')
+  const [kind, setKind] = createSignal<MediaKind>(props.comic ? 'comic' : 'series')
   const [libraryId, setLibraryId] = createSignal<string | null>(null)
   const library = () => libraryId() ?? settings()?.libraries[0]?.id ?? ''
+  const [formatPick, setFormat] = createSignal<ComicFormat | null>(null)
+  const comicFormat = () => formatPick() ?? settings()?.comicDefaultFormat ?? 'images'
 
   const [by, setBy] = createSignal<LookupBy>('name')
   const [query, setQuery] = createSignal('')
@@ -47,7 +50,9 @@ function NewMediaModal(props: { onClose: () => void }) {
   const [year, setYear] = createSignal('')
   const [create, creating] = useAction(async () => {
     const d = await api<MediaDetail>('/media', {
-      body: { media: { kind: kind(), title: title(), year: year() ? Number(year()) : null, libraryId: library() } },
+      body: {
+        media: { kind: kind(), title: title(), year: year() ? Number(year()) : null, libraryId: library(), comicFormat: comicFormat() },
+      },
     })
     navigate(`/media/${d.media.id}`)
   })
@@ -56,8 +61,8 @@ function NewMediaModal(props: { onClose: () => void }) {
     `px-3 py-1.5 border-b-2 ${active ? 'border-indigo-600 font-medium text-indigo-700' : 'border-transparent text-slate-500'}`
 
   return (
-    <Modal title="新建媒体" onClose={props.onClose} wide>
-      <div class="mb-4 flex gap-2 border-b border-slate-200">
+    <Modal title={props.comic ? '新建漫画' : '新建媒体'} onClose={props.onClose} wide>
+      <div class="mb-4 flex gap-2 border-b border-slate-200" classList={{ hidden: props.comic }}>
         <button class={tabClass(tab() === 'provider')} onClick={() => setTab('provider')}>
           从 TMDB 导入
         </button>
@@ -67,10 +72,16 @@ function NewMediaModal(props: { onClose: () => void }) {
       </div>
 
       <div class="mb-4 grid gap-3 sm:grid-cols-2">
-        <Field label="类型" hint="只影响落盘的目录结构（Emby 剧集 / 电影），数据结构相同。">
+        <Field class={props.comic ? 'hidden' : ''} label="类型" hint="只影响落盘的目录结构（Emby 剧集 / 电影），数据结构相同。">
           <select class="input" value={kind()} onChange={(e) => (setKind(e.currentTarget.value as MediaKind), setResults(null))}>
             <option value="series">剧集</option>
             <option value="movie">电影</option>
+          </select>
+        </Field>
+        <Field class={props.comic ? '' : 'hidden'} label="形式">
+          <select class="input" value={comicFormat()} onChange={(e) => setFormat(e.currentTarget.value as ComicFormat)}>
+            <option value="images">图片文件夹（Emby 图片库）</option>
+              <option value="cbz">CBZ（Emby 书籍库）</option>
           </select>
         </Field>
         <Field label="媒体库">
@@ -145,7 +156,11 @@ function NewMediaModal(props: { onClose: () => void }) {
             <button class="btn btn-primary" disabled={creating() || !title().trim()}>
               创建
             </button>
-            <span class="ml-3 text-xs text-slate-400">其余信息和季 / 集在创建后的页面里填写。</span>
+            <span class="ml-3 text-xs text-slate-400">
+              {props.comic
+                ? '媒体库要和形式对应：图片文件夹选 Emby 图片库的目录，CBZ 选书籍库的目录。季 / 集在创建后的页面里填写，也可以直接导入。'
+                : '其余信息和季 / 集在创建后的页面里填写。'}
+            </span>
           </div>
         </form>
       </Show>
@@ -153,8 +168,15 @@ function NewMediaModal(props: { onClose: () => void }) {
   )
 }
 
-export default function MediaListPage() {
-  const [list] = createResource(() => api<MediaListItem[]>('/media'))
+const KIND_LABEL: Record<MediaKind, string> = { series: '剧集', movie: '电影', comic: '漫画' }
+
+export const ComicListPage = () => <MediaListPage comic />
+
+export default function MediaListPage(props: { comic?: boolean }) {
+  const noun = () => (props.comic ? '漫画' : '媒体')
+  const [list] = createResource(async () =>
+    (await api<MediaListItem[]>('/media')).filter((m) => (m.kind === 'comic') === !!props.comic),
+  )
   const [q, setQ] = createSignal('')
   const [creating, setCreating] = createSignal(false)
   const filtered = createMemo(() => {
@@ -166,11 +188,11 @@ export default function MediaListPage() {
   return (
     <>
       <div class="mb-4 flex items-center gap-3">
-        <h1 class="text-lg font-semibold">Media</h1>
+        <h1 class="text-lg font-semibold">{noun()}</h1>
         <input class="input max-w-xs" placeholder="搜索标题" value={q()} onInput={(e) => setQ(e.currentTarget.value)} />
         <span class="text-xs text-slate-400">{filtered().length} 个</span>
         <button class="btn btn-primary ml-auto" onClick={() => setCreating(true)}>
-          ＋ 新建媒体
+          ＋ 新建{noun()}
         </button>
       </div>
 
@@ -180,7 +202,7 @@ export default function MediaListPage() {
             each={filtered()}
             fallback={
               <p class="col-span-full py-16 text-center text-slate-400">
-                {list()?.length ? '没有匹配的媒体。' : '还没有媒体。先去「设置」加一个媒体库，再点右上角新建。'}
+                {list()?.length ? `没有匹配的${noun()}。` : `还没有${noun()}。先去「设置」加一个媒体库，再点右上角新建。`}
               </p>
             }
           >
@@ -193,10 +215,10 @@ export default function MediaListPage() {
                   </div>
                   <div class="mt-0.5 flex items-center justify-between text-xs text-slate-500">
                     <span>
-                      {m.year ?? '—'} · {m.kind === 'series' ? '剧集' : '电影'}
+                      {m.year ?? '—'} · {KIND_LABEL[m.kind]}
                     </span>
                     <span classList={{ 'text-emerald-600': m.videoCount > 0 }}>
-                      {m.videoCount}/{m.episodeCount}
+                      {props.comic ? `${m.videoCount} 集` : `${m.videoCount}/${m.episodeCount}`}
                     </span>
                   </div>
                 </div>
@@ -207,7 +229,7 @@ export default function MediaListPage() {
       </Show>
 
       <Show when={creating()}>
-        <NewMediaModal onClose={() => setCreating(false)} />
+        <NewMediaModal comic={props.comic} onClose={() => setCreating(false)} />
       </Show>
     </>
   )

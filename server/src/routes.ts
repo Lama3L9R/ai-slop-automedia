@@ -8,12 +8,19 @@ import {
   RefreshInput,
   SourceType,
   TorrentStateInput,
+  ComicImportRequest,
+  PageOrderInput,
   type ImportPlan,
+  type MediaDetail,
 } from '@automedia/shared'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { suggest } from './ai/suggest'
-import { badRequest } from './errors'
+import { ensureExtracted, executeComicImport, getPages, planComicImport, setPageOrder } from './comics/import'
+import { createReadStream } from 'node:fs'
+import { eq } from 'drizzle-orm'
+import { db, schema } from './db'
+import { badRequest, notFound } from './errors'
 import { executeImport, planImport } from './import/engine'
 import {
   createMedia,
@@ -32,6 +39,26 @@ import { listDirs, sourceTree } from './sources/tree'
 import { listUploads, saveUpload } from './subtitles/upload'
 
 const idParam = z.object({ id: z.coerce.number().int() })
+const slotQuery = z.object({ season: z.coerce.number().int().min(0), episode: z.coerce.number().int().min(0) })
+
+/** 给前端的 Media 详情：漫画页数量太多，不随详情下发（只给 pageCounts），要看某一集的页另外取 */
+function detailForApi(id: number): MediaDetail {
+  const d = getMediaDetail(id)
+  return { ...d, links: d.links.filter((l) => l.kind !== 'page') }
+}
+
+const IMAGE_TYPES: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  avif: 'image/avif',
+  jxl: 'image/jxl',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+}
 
 export function registerRoutes(app: FastifyInstance) {
   app.get('/api/health', async () => ({ ok: true }))
@@ -45,18 +72,18 @@ export function registerRoutes(app: FastifyInstance) {
 
   // ── Media ──
   app.get('/api/media', async () => listMedia())
-  app.get('/api/media/:id', async (req) => getMediaDetail(idParam.parse(req.params).id))
+  app.get('/api/media/:id', async (req) => detailForApi(idParam.parse(req.params).id))
 
   app.post('/api/media', async (req) => {
     const id = createMedia(MediaSaveInput.parse(req.body))
-    return getMediaDetail(id)
+    return detailForApi(id)
   })
 
   app.put('/api/media/:id', async (req) => {
     const { id } = idParam.parse(req.params)
     saveMedia(id, MediaSaveInput.parse(req.body))
     const { warnings } = await syncMedia(id)
-    return { ...getMediaDetail(id), warnings }
+    return { ...detailForApi(id), warnings }
   })
 
   app.delete('/api/media/:id', async (req) => {
@@ -68,19 +95,20 @@ export function registerRoutes(app: FastifyInstance) {
   app.post('/api/media/:id/sync', async (req) => {
     const { id } = idParam.parse(req.params)
     const { warnings } = await syncMedia(id)
-    return { ...getMediaDetail(id), warnings }
+    return { ...detailForApi(id), warnings }
   })
 
   app.post('/api/media/:id/refresh', async (req) => {
     const { id } = idParam.parse(req.params)
     const { mode } = RefreshInput.parse(req.body ?? {})
     const current = getMediaDetail(id)
+    if (current.media.kind === 'comic') throw badRequest('漫画没有上游元数据可以刷新')
     const provider = getProvider('tmdb')
     const pid = await provider.resolveId(current.media)
     if (!pid) throw badRequest('这个媒体没有可用的外部 ID（TMDB / TVDB / IMDb），无法从上游刷新')
     saveMedia(id, MediaSaveInput.parse(mergeProvider(current, await provider.fetch(current.media.kind, pid), mode)))
     const { warnings } = await syncMedia(id)
-    return { ...getMediaDetail(id), warnings }
+    return { ...detailForApi(id), warnings }
   })
 
   app.delete('/api/links/:id', async (req) => {
@@ -95,16 +123,18 @@ export function registerRoutes(app: FastifyInstance) {
   app.get('/api/providers/:pid/search', async (req) => {
     const { pid } = z.object({ pid: z.string() }).parse(req.params)
     const q = z.object({ kind: MediaKind, by: LookupBy.default('name'), q: z.string() }).parse(req.query)
+    if (q.kind === 'comic') throw badRequest('漫画没有可用的元数据来源，请手动创建')
     return getProvider(pid).search(q.kind, q.by, q.q)
   })
 
   app.post('/api/media/from-provider', async (req) => {
     const input = FromProviderInput.parse(req.body)
+    if (input.kind === 'comic') throw badRequest('漫画没有可用的元数据来源，请手动创建')
     const data = await getProvider(input.provider).fetch(input.kind, input.id)
     const id = createMedia(
       MediaSaveInput.parse({ ...data, media: { ...data.media, libraryId: input.libraryId } }),
     )
-    return getMediaDetail(id)
+    return detailForApi(id)
   })
 
   // ── 来源 ──
@@ -128,6 +158,31 @@ export function registerRoutes(app: FastifyInstance) {
     return { items, adopt }
   })
   app.post('/api/import/execute', async (req) => executeImport(ImportRequest.parse(req.body)))
+
+  // ── 漫画 ──
+  app.post('/api/comics/extract', async (req) => ({
+    dir: await ensureExtracted(z.object({ path: z.string().min(1) }).parse(req.body).path),
+  }))
+  app.post('/api/comics/preview', async (req) => planComicImport(ComicImportRequest.parse(req.body)))
+  app.post('/api/comics/import', async (req) => executeComicImport(ComicImportRequest.parse(req.body)))
+
+  app.get('/api/media/:id/pages', async (req) => {
+    const q = slotQuery.parse(req.query)
+    return getPages(idParam.parse(req.params).id, q.season, q.episode)
+  })
+  app.put('/api/media/:id/pages', async (req) => {
+    const input = PageOrderInput.parse(req.body)
+    return setPageOrder(idParam.parse(req.params).id, input.season, input.episode, input.order)
+  })
+
+  /** 页面排序界面预览用：把某个链接指向的图片原样发出去 */
+  app.get('/api/links/:id/file', async (req, reply) => {
+    const { id } = idParam.parse(req.params)
+    const link = db().select().from(schema.links).where(eq(schema.links.id, id)).get()
+    const type = link && IMAGE_TYPES[link.ext]
+    if (!link || !type) throw notFound('没有这张图片')
+    return reply.type(type).header('cache-control', 'private, max-age=3600').send(createReadStream(link.sourcePath))
+  })
 
   // ── 字幕上传 ──
   app.get('/api/subtitles/uploads', async () => listUploads())

@@ -68,6 +68,17 @@ export async function api<T>(path: string, opts: Options = {}): Promise<T> {
   return handle<T>(res, opts.auth !== undefined)
 }
 
+/** 带着访问密码取一个文件（<img> 没法带请求头，所以页面预览走这里再转成 blob URL） */
+export async function apiBlob(path: string): Promise<Blob> {
+  const res = await fetch(buildUrl(path), { headers: { authorization: `Bearer ${password()}` } })
+  if (res.status === 401) {
+    setPassword('')
+    throw new ApiError(401, '密码不正确')
+  }
+  if (!res.ok) throw new ApiError(res.status, `请求失败（HTTP ${res.status}）`)
+  return res.blob()
+}
+
 export async function upload<T>(path: string, files: File[], query?: Options['query']): Promise<T> {
   const form = new FormData()
   for (const f of files) form.append('files', f, f.name)

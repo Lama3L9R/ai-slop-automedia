@@ -5,18 +5,32 @@ import { z } from 'zod'
 export const LinkMode = z.enum(['symlink', 'hardlink', 'copy'])
 export type LinkMode = z.infer<typeof LinkMode>
 
-/** series = Emby 剧集目录结构；movie = Emby 电影目录结构。数据结构完全相同（Media → Season → Episode）。 */
-export const MediaKind = z.enum(['series', 'movie'])
+/**
+ * series = Emby 剧集目录结构；movie = Emby 电影目录结构；comic = 漫画（图片库的文件夹结构，一集是一个装满图片的文件夹）。
+ * 数据结构完全相同（Media → Season → Episode）。
+ */
+export const MediaKind = z.enum(['series', 'movie', 'comic'])
 export type MediaKind = z.infer<typeof MediaKind>
 
 export const FileKind = z.enum(['video', 'subtitle', 'audio'])
 export type FileKind = z.infer<typeof FileKind>
+
+/** 媒体库里一个链接的类型：视频向导导入的三种，加上漫画的一页 */
+export type LinkKind = FileKind | 'page'
 
 export const TorrentState = z.enum(['new', 'imported', 'ignored'])
 export type TorrentState = z.infer<typeof TorrentState>
 
 export const SourceType = z.enum(['torrent', 'dir'])
 export type SourceType = z.infer<typeof SourceType>
+
+/**
+ * 漫画落盘的形式：
+ * - images：一集一个文件夹，图片链接进去（Emby 图片库）
+ * - cbz：一集打包成一个 .cbz，内含 ComicInfo.xml（Emby 书籍库）。打包是拷贝，不是链接
+ */
+export const ComicFormat = z.enum(['images', 'cbz'])
+export type ComicFormat = z.infer<typeof ComicFormat>
 
 export const ExistingMode = z.enum(['skip', 'safe', 'force'])
 export type ExistingMode = z.infer<typeof ExistingMode>
@@ -76,6 +90,8 @@ export const SettingsSchema = z.object({
   /** Emby 媒体库根目录，可以有多个（动画 / 电影 / …） */
   libraries: z.array(LibrarySchema).default([]),
   defaultLinkMode: LinkMode.default('symlink'),
+  /** 新建漫画时默认用哪种形式；每部漫画可以单独改 */
+  comicDefaultFormat: ComicFormat.default('images'),
   /** 上传的字幕解压后存放的位置 */
   subtitleDir: z.string().default(''),
   qb: z
@@ -141,6 +157,8 @@ export const MediaInput = z.object({
   posterUrl: z.string().default(''),
   fanartUrl: z.string().default(''),
   libraryId: z.string().default(''),
+  /** 只对 kind = comic 有意义 */
+  comicFormat: ComicFormat.default('images'),
 })
 export type MediaInput = z.infer<typeof MediaInput>
 
@@ -191,10 +209,12 @@ export interface Link {
   mediaId: number
   season: number
   episode: number
-  kind: FileKind
+  kind: LinkKind
   /** 字幕 / 外挂音轨的语言标签，如 chs */
   suffix: string
   ext: string
+  /** 漫画页在这一集里的顺序（从 1 开始）；其他类型恒为 0 */
+  position: number
   sourceType: SourceType
   sourceRef: string
   sourceName: string
@@ -204,11 +224,19 @@ export interface Link {
   createdAt: number
 }
 
+export interface PageCount {
+  season: number
+  episode: number
+  count: number
+}
+
 export interface MediaDetail {
   media: Media
   seasons: Season[]
   episodes: Episode[]
+  /** 接口返回时不含漫画页（数量太多），漫画页按集汇总在 pageCounts 里 */
   links: Link[]
+  pageCounts: PageCount[]
 }
 
 // ───────────────────────── provider ─────────────────────────
@@ -275,8 +303,20 @@ export interface SourceTree {
   name: string
   root: string
   nodes: TreeNode[]
-  /** 这个来源下已经导入过的文件 */
+  /** 这个来源下已经导入过的文件（不含漫画页） */
   links: (Link & { mediaTitle: string })[]
+  /** 这个来源下已经导入过的漫画页，按「源目录 + 导入到哪一集」汇总 */
+  pageImports: PageImport[]
+}
+
+export interface PageImport {
+  /** 这些页的源文件所在的目录 */
+  dir: string
+  mediaId: number
+  mediaTitle: string
+  season: number
+  episode: number
+  count: number
 }
 
 export const TorrentStateInput = z.object({
@@ -345,6 +385,51 @@ export interface ImportResult {
   warnings: string[]
 }
 
+// ───────────────────────── 漫画 ─────────────────────────
+
+/** 一个导入单位：一个压缩包，或者一个装着图片的文件夹 → 一集 */
+export const ComicImportItem = z.object({
+  path: z.string().min(1),
+  season: int.min(0),
+  episode: int.min(0),
+})
+export type ComicImportItem = z.infer<typeof ComicImportItem>
+
+export const ComicImportRequest = z.object({
+  mediaId: int,
+  linkMode: LinkMode,
+  sourceType: SourceType,
+  sourceRef: z.string(),
+  sourceName: z.string().default(''),
+  items: z.array(ComicImportItem).min(1, '没有要导入的内容'),
+  markImported: z.boolean().default(true),
+})
+export type ComicImportRequest = z.infer<typeof ComicImportRequest>
+
+export interface ComicPlanItem extends ComicImportItem {
+  /** 这一集在媒体库里的文件夹 */
+  target: string
+  /** 图片数量；压缩包还没解压又无法预先列出内容时为 null */
+  pages: number | null
+  /** 导入时需要先解压 */
+  extract: boolean
+  /** ok = 新建；replace = 这一集已有页面，会整集替换；error = 无法导入 */
+  status: 'ok' | 'replace' | 'error'
+  message: string
+}
+
+export interface ComicImportResult {
+  items: (ComicPlanItem & { done: boolean })[]
+  warnings: string[]
+}
+
+/** 一集的页面顺序：按新顺序列出要保留的页（链接 id），没列出的页会被移除 */
+export const PageOrderInput = z.object({
+  season: int.min(0),
+  episode: int.min(0),
+  order: z.array(int),
+})
+
 // ───────────────────────── AI ─────────────────────────
 
 export const AiSuggestInput = z.object({
@@ -373,6 +458,11 @@ export const naturalCompare = (a: string, b: string) => collator.compare(a, b)
 const VIDEO_EXT = new Set(['mkv', 'mp4', 'm4v', 'm2ts', 'ts', 'avi', 'mov', 'wmv', 'webm', 'flv', 'rmvb', 'mpg', 'mpeg', 'iso'])
 const SUBTITLE_EXT = new Set(['ass', 'ssa', 'srt', 'sup', 'vtt', 'smi', 'sub', 'idx'])
 const AUDIO_EXT = new Set(['mka', 'flac', 'ac3', 'eac3', 'dts', 'aac', 'm4a', 'mp3', 'wav', 'opus'])
+
+const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'jxl', 'tif', 'tiff'])
+const ARCHIVE_EXT = new Set(['zip', 'cbz', 'rar', 'cbr', '7z', 'cb7'])
+export const isImage = (name: string) => IMAGE_EXT.has(extOf(name))
+export const isArchive = (name: string) => ARCHIVE_EXT.has(extOf(name))
 
 export function extOf(name: string): string {
   const i = name.lastIndexOf('.')

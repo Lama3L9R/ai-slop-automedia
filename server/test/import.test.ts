@@ -4,12 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import zlib from 'node:zlib'
-import { ImportRequest, MediaSaveInput, guessSubtitleSuffix, naturalCompare } from '@automedia/shared'
+import { ComicImportRequest, ImportRequest, MediaSaveInput, guessSubtitleSuffix, naturalCompare } from '@automedia/shared'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import { parseItems, render } from '../src/ai/suggest'
 import { buildApp } from '../src/app'
 import { openDb } from '../src/db'
+import { executeComicImport, getPages, planComicImport, setPageOrder } from '../src/comics/import'
 import { executeImport, planImport } from '../src/import/engine'
 import { parseEpisodes } from '../src/media/existing'
 import { createMedia, deleteMedia, getMediaDetail, removeLinks, saveMedia } from '../src/media/store'
@@ -17,6 +18,7 @@ import { imagesIdle, syncMedia } from '../src/media/sync'
 import { saveSettings } from '../src/settings'
 import { readTree } from '../src/sources/tree'
 import { saveUpload } from '../src/subtitles/upload'
+import { extractArchive, zipEntryNames } from '../src/util/archive'
 
 const tmp = fsSync.mkdtempSync(path.join(process.env.AUTOMEDIA_TEST_TMP || os.tmpdir(), 'automedia-test-'))
 const lib = path.join(tmp, 'library')
@@ -75,6 +77,43 @@ afterAll(async () => {
   await imagesIdle()
   await fs.rm(tmp, { recursive: true, force: true })
 })
+
+/** 手工拼一个「存储」方式的 zip，文件名用原始字节（模拟中文 Windows 打的 GBK 包） */
+function makeZip(entries: { name: Buffer; data: Buffer }[]): Buffer {
+  const locals: Buffer[] = []
+  const centrals: Buffer[] = []
+  let offset = 0
+  for (const e of entries) {
+    const crc = zlib.crc32(e.data)
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt32LE(crc, 14)
+    local.writeUInt32LE(e.data.length, 18)
+    local.writeUInt32LE(e.data.length, 22)
+    local.writeUInt16LE(e.name.length, 26)
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(0x02014b50, 0)
+    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE(20, 6)
+    central.writeUInt32LE(crc, 16)
+    central.writeUInt32LE(e.data.length, 20)
+    central.writeUInt32LE(e.data.length, 24)
+    central.writeUInt16LE(e.name.length, 28)
+    central.writeUInt32LE(offset, 42)
+    locals.push(local, e.name, e.data)
+    centrals.push(central, e.name)
+    offset += 30 + e.name.length + e.data.length
+  }
+  const cd = Buffer.concat(centrals)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(entries.length, 8)
+  end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(cd.length, 12)
+  end.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, cd, end])
+}
 
 describe('纯函数', () => {
   it('自然排序', () => {
@@ -289,43 +328,6 @@ describe('movie 布局', () => {
 })
 
 describe('字幕上传', () => {
-  /** 手工拼一个「存储」方式的 zip，文件名用原始字节（模拟中文 Windows 打的 GBK 包） */
-  function makeZip(entries: { name: Buffer; data: Buffer }[]): Buffer {
-    const locals: Buffer[] = []
-    const centrals: Buffer[] = []
-    let offset = 0
-    for (const e of entries) {
-      const crc = zlib.crc32(e.data)
-      const local = Buffer.alloc(30)
-      local.writeUInt32LE(0x04034b50, 0)
-      local.writeUInt16LE(20, 4)
-      local.writeUInt32LE(crc, 14)
-      local.writeUInt32LE(e.data.length, 18)
-      local.writeUInt32LE(e.data.length, 22)
-      local.writeUInt16LE(e.name.length, 26)
-      const central = Buffer.alloc(46)
-      central.writeUInt32LE(0x02014b50, 0)
-      central.writeUInt16LE(20, 4)
-      central.writeUInt16LE(20, 6)
-      central.writeUInt32LE(crc, 16)
-      central.writeUInt32LE(e.data.length, 20)
-      central.writeUInt32LE(e.data.length, 24)
-      central.writeUInt16LE(e.name.length, 28)
-      central.writeUInt32LE(offset, 42)
-      locals.push(local, e.name, e.data)
-      centrals.push(central, e.name)
-      offset += 30 + e.name.length + e.data.length
-    }
-    const cd = Buffer.concat(centrals)
-    const end = Buffer.alloc(22)
-    end.writeUInt32LE(0x06054b50, 0)
-    end.writeUInt16LE(entries.length, 8)
-    end.writeUInt16LE(entries.length, 10)
-    end.writeUInt32LE(cd.length, 12)
-    end.writeUInt32LE(offset, 16)
-    return Buffer.concat([...locals, cd, end])
-  }
-
   it('解压 zip：GBK 文件名、子目录、拦截越界路径', async () => {
     const gbk = Buffer.from([0xd7, 0xd6, 0xc4, 0xbb]) // 「字幕」的 GBK 编码
     const zip = makeZip([
@@ -485,6 +487,204 @@ describe('改季号', () => {
     expect(await has(path.join(dir, 'Season 02'))).toBe(false)
     await deleteMedia(id)
     expect(await has(dir)).toBe(false)
+  })
+})
+
+describe('漫画', () => {
+  const comicSrc = path.join(tmp, 'downloads', '[漫画] 测试漫画')
+  const comicRequest = (mediaId: number, items: { path: string; season: number; episode: number }[]) =>
+    ComicImportRequest.parse({ mediaId, linkMode: 'copy', sourceType: 'dir', sourceRef: comicSrc, items })
+  const ls = async (p: string) => (await fs.readdir(p)).sort()
+
+  it('压缩包原地解压，按自然排序编号；可以调整顺序、删页；多季时自动分文件夹', async () => {
+    await fs.mkdir(path.join(comicSrc, 'vol2'), { recursive: true })
+    const vol1 = path.join(comicSrc, '第01卷.zip')
+    await fs.writeFile(
+      vol1,
+      makeZip([
+        { name: Buffer.from('10.jpg'), data: Buffer.from('p10') },
+        { name: Buffer.from('2.jpg'), data: Buffer.from('p2') },
+        { name: Buffer.from('1.jpg'), data: Buffer.from('p1') },
+        { name: Buffer.from('credits.txt'), data: Buffer.from('not an image') },
+      ]),
+    )
+    await fs.writeFile(path.join(comicSrc, 'vol2', 'b.png'), 'v2b')
+    await fs.writeFile(path.join(comicSrc, 'vol2', 'a.png'), 'v2a')
+    const vol2 = path.join(comicSrc, 'vol2')
+
+    const id = createMedia(
+      MediaSaveInput.parse({
+        media: { kind: 'comic', title: '测试漫画', libraryId: 'anime' },
+        episodes: [{ season: 1, number: 1, title: '开端' }],
+      }),
+    )
+    const dir = path.join(lib, '测试漫画')
+    const items = [
+      { path: vol1, season: 1, episode: 1 },
+      { path: vol2, season: 1, episode: 2 },
+    ]
+
+    const plan = await planComicImport(comicRequest(id, items))
+    expect(plan.map((p) => [p.status, p.pages, p.extract])).toEqual([
+      ['ok', 3, true],
+      ['ok', 2, false],
+    ])
+    expect(plan[0].target).toBe(path.join(dir, '001 - 开端'))
+    expect(await has(path.join(comicSrc, '第01卷'))).toBe(false) // 预览不解压
+
+    const res = await executeComicImport(comicRequest(id, items))
+    expect(res.items.map((r) => [r.done, r.pages])).toEqual([
+      [true, 3],
+      [true, 2],
+    ])
+    expect(res.warnings).toEqual([])
+    // 解压在压缩包旁边的同名文件夹里，压缩包本身不动
+    expect(await ls(path.join(comicSrc, '第01卷'))).toEqual(['1.jpg', '10.jpg', '2.jpg', 'credits.txt'])
+    expect(await has(vol1)).toBe(true)
+    // 只有一季：不建季文件夹；没有 NFO；页面按自然排序编号
+    expect(await ls(dir)).toEqual(['001 - 开端', '002'])
+    expect(await ls(path.join(dir, '001 - 开端'))).toEqual(['0001.jpg', '0002.jpg', '0003.jpg'])
+    expect(await read(path.join(dir, '001 - 开端', '0003.jpg'))).toBe('p10')
+    expect(await read(path.join(dir, '002', '0001.png'))).toBe('v2a')
+    expect(getMediaDetail(id).pageCounts).toEqual([
+      { season: 1, episode: 1, count: 3 },
+      { season: 1, episode: 2, count: 2 },
+    ])
+
+    // 调整顺序：第 10 页放最前当封面，第 2 页删掉
+    const pages = getPages(id, 1, 1)
+    expect(pages.map((p) => path.basename(p.sourcePath))).toEqual(['1.jpg', '2.jpg', '10.jpg'])
+    const after = await setPageOrder(id, 1, 1, [pages[2].id, pages[0].id])
+    expect(after.map((p) => [p.position, path.basename(p.sourcePath)])).toEqual([
+      [1, '10.jpg'],
+      [2, '1.jpg'],
+    ])
+    expect(await ls(path.join(dir, '001 - 开端'))).toEqual(['0001.jpg', '0002.jpg'])
+    expect(await read(path.join(dir, '001 - 开端', '0001.jpg'))).toBe('p10')
+    expect(await read(path.join(dir, '001 - 开端', '0002.jpg'))).toBe('p1')
+    await expect(setPageOrder(id, 1, 1, [pages[1].id])).rejects.toThrow(/不一致/)
+
+    // 再导入一个第 2 季的内容：变成多季，已有的集自动挪进 S01
+    const more = await executeComicImport(comicRequest(id, [{ path: vol2, season: 2, episode: 1 }]))
+    expect(more.items[0].done).toBe(true)
+    expect(await ls(dir)).toEqual(['S01', 'S02'])
+    expect(await ls(path.join(dir, 'S01'))).toEqual(['001 - 开端', '002'])
+    expect(await read(path.join(dir, 'S01', '001 - 开端', '0001.jpg'))).toBe('p10')
+    expect(await ls(path.join(dir, 'S02', '001'))).toEqual(['0001.png', '0002.png'])
+
+    // 重新导入同一集：整集替换
+    const again = await planComicImport(comicRequest(id, [{ path: vol2, season: 1, episode: 1 }]))
+    expect(again[0].status).toBe('replace')
+    await executeComicImport(comicRequest(id, [{ path: vol2, season: 1, episode: 1 }]))
+    expect(await ls(path.join(dir, 'S01', '001 - 开端'))).toEqual(['0001.png', '0002.png'])
+
+    // 视频向导不接受漫画
+    await expect(
+      planImport(request(id, { items: [{ path: file('[VCB-Studio] ReLIFE [01].mkv'), season: 1, episode: 1, kind: 'video' }] })),
+    ).rejects.toThrow(/漫画/)
+
+    await deleteMedia(id)
+    expect(await has(dir)).toBe(false)
+    expect(await read(path.join(comicSrc, '第01卷', '1.jpg'))).toBe('p1')
+  })
+
+  it('CBZ 模式：一集打成一个带 ComicInfo.xml 的 cbz，改顺序 / 改元数据会重新打包，可以和图片模式互相切换', async () => {
+    const vol1 = path.join(comicSrc, '第01卷.zip') // 上一个用例已经解压过：1.jpg 2.jpg 10.jpg
+    const vol2 = path.join(comicSrc, 'vol2')
+    const media = { kind: 'comic' as const, title: 'CBZ 漫画', year: 2020, libraryId: 'anime', comicFormat: 'cbz' as const, genres: ['热血'], studios: ['某作者'], overview: '简介 & 说明' }
+    const id = createMedia(MediaSaveInput.parse({ media, episodes: [{ season: 1, number: 1, title: '开端' }] }))
+    const dir = path.join(lib, 'CBZ 漫画 (2020)')
+    /** 把 cbz 解到临时目录里读内容 */
+    const unpack = async (cbz: string) => {
+      const out = await fs.mkdtemp(path.join(tmp, 'unpack-'))
+      await extractArchive(cbz, path.basename(cbz), out)
+      return out
+    }
+
+    const plan = await planComicImport(comicRequest(id, [{ path: vol1, season: 1, episode: 1 }, { path: vol2, season: 1, episode: 2 }]))
+    expect(plan[0].target).toBe(path.join(dir, 'CBZ 漫画 - 001 - 开端.cbz'))
+    const res = await executeComicImport(comicRequest(id, [{ path: vol1, season: 1, episode: 1 }, { path: vol2, season: 1, episode: 2 }]))
+    expect(res.items.map((r) => r.done)).toEqual([true, true])
+    expect(res.warnings).toEqual([])
+    // 媒体库里只有 cbz，没有散的图片
+    expect(await ls(dir)).toEqual(['CBZ 漫画 - 001 - 开端.cbz', 'CBZ 漫画 - 002.cbz'])
+    const cbz1 = path.join(dir, 'CBZ 漫画 - 001 - 开端.cbz')
+    expect(await zipEntryNames(cbz1)).toEqual(['0001.jpg', '0002.jpg', '0003.jpg', 'ComicInfo.xml'])
+    let out = await unpack(cbz1)
+    expect(await read(path.join(out, '0003.jpg'))).toBe('p10')
+    const info = await read(path.join(out, 'ComicInfo.xml'))
+    for (const piece of [
+      '<Title>开端</Title>',
+      '<Series>CBZ 漫画</Series>',
+      '<Number>1</Number>',
+      '<Count>2</Count>',
+      '<Summary>简介 &amp; 说明</Summary>',
+      '<Year>2020</Year>',
+      '<Writer>某作者</Writer>',
+      '<Genre>热血</Genre>',
+      '<PageCount>3</PageCount>',
+      '<Page Image="0" Type="FrontCover" />',
+    ])
+      expect(info).toContain(piece)
+    expect(info).not.toContain('<Volume>') // 只有一季时不写
+    expect(getMediaDetail(id).pageCounts.map((c) => c.count)).toEqual([3, 2])
+
+    // 没变化时再同步不会重新打包
+    const before = (await fs.stat(cbz1)).mtimeMs
+    await new Promise((r) => setTimeout(r, 20))
+    await syncMedia(id)
+    expect((await fs.stat(cbz1)).mtimeMs).toBe(before)
+
+    // 调整顺序 → 重新打包
+    const pages = getPages(id, 1, 1)
+    await setPageOrder(id, 1, 1, [pages[2].id, pages[0].id, pages[1].id])
+    out = await unpack(cbz1)
+    expect(await read(path.join(out, '0001.jpg'))).toBe('p10')
+    expect(await read(path.join(out, '0002.jpg'))).toBe('p1')
+
+    // 改集标题 → 文件名和 ComicInfo 都跟着变，旧包被清掉
+    saveMedia(id, MediaSaveInput.parse({ media, episodes: [{ season: 1, number: 1, title: '序章' }] }))
+    expect((await syncMedia(id)).warnings).toEqual([])
+    expect(await ls(dir)).toEqual(['CBZ 漫画 - 001 - 序章.cbz', 'CBZ 漫画 - 002.cbz'])
+    out = await unpack(path.join(dir, 'CBZ 漫画 - 001 - 序章.cbz'))
+    expect(await read(path.join(out, 'ComicInfo.xml'))).toContain('<Title>序章</Title>')
+
+    // 切到图片模式：cbz 删掉，变成图片文件夹（顺序保留）
+    saveMedia(id, MediaSaveInput.parse({ media: { ...media, comicFormat: 'images' }, episodes: [{ season: 1, number: 1, title: '序章' }] }))
+    expect((await syncMedia(id)).warnings).toEqual([])
+    expect(await ls(dir)).toEqual(['001 - 序章', '002'])
+    expect(await read(path.join(dir, '001 - 序章', '0001.jpg'))).toBe('p10')
+
+    // 再切回 CBZ：图片文件夹清掉，重新打包
+    saveMedia(id, MediaSaveInput.parse({ media, episodes: [{ season: 1, number: 1, title: '序章' }] }))
+    expect((await syncMedia(id)).warnings).toEqual([])
+    expect(await ls(dir)).toEqual(['CBZ 漫画 - 001 - 序章.cbz', 'CBZ 漫画 - 002.cbz'])
+
+    // 多季：进季文件夹，文件名带 SxxExxx，ComicInfo 写 Volume
+    await executeComicImport(comicRequest(id, [{ path: vol2, season: 2, episode: 1 }]))
+    expect(await ls(dir)).toEqual(['S01', 'S02'])
+    expect(await ls(path.join(dir, 'S02'))).toEqual(['CBZ 漫画 - S02E001.cbz'])
+    out = await unpack(path.join(dir, 'S02', 'CBZ 漫画 - S02E001.cbz'))
+    expect(await read(path.join(out, 'ComicInfo.xml'))).toContain('<Volume>2</Volume>')
+
+    await deleteMedia(id)
+    expect(await has(dir)).toBe(false)
+    expect(await read(path.join(comicSrc, '第01卷', '1.jpg'))).toBe('p1')
+  })
+
+  it('没有图片、路径不对、同一集重复都会在预览里报出来', async () => {
+    const id = createMedia(MediaSaveInput.parse({ media: { kind: 'comic', title: '空漫画', libraryId: 'anime' } }))
+    await fs.mkdir(path.join(comicSrc, 'empty'), { recursive: true })
+    const plan = await planComicImport(
+      comicRequest(id, [
+        { path: path.join(comicSrc, 'empty'), season: 1, episode: 1 },
+        { path: path.join(comicSrc, 'nope.zip'), season: 1, episode: 2 },
+        { path: path.join(comicSrc, 'vol2'), season: 1, episode: 3 },
+        { path: path.join(comicSrc, '第01卷'), season: 1, episode: 3 },
+      ]),
+    )
+    expect(plan.map((p) => p.status)).toEqual(['error', 'error', 'error', 'error'])
+    await deleteMedia(id)
   })
 })
 

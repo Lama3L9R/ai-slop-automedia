@@ -35,7 +35,7 @@ export function mergeProvider(
   mode: 'fill' | 'overwrite',
 ): SaveInput {
   const { id: _i, folderPath: _f, createdAt: _c, updatedAt: _u, ...cur } = current.media
-  const inc: MediaInput = { ...incoming.media, kind: cur.kind, libraryId: cur.libraryId }
+  const inc: MediaInput = { ...incoming.media, kind: cur.kind, libraryId: cur.libraryId, comicFormat: cur.comicFormat }
   const media = mode === 'overwrite' ? fill(inc, cur) : fill(cur, inc)
 
   const seasonMap = new Map<number, Season>(current.seasons.map((s) => [s.number, s]))
