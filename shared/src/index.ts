@@ -449,6 +449,82 @@ export interface AiSuggestResult {
   items: { index: number; season: number; episode: number; suffix: string }[]
 }
 
+// ───────────────────────── 自动化 ─────────────────────────
+
+/** 什么时候自动执行。目前只有定时，以后要加别的时机就在这里加一种 type */
+export const AutomationTrigger = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('schedule'),
+    /** cron 表达式：分 时 日 月 周（也可以在最前面多写一位秒） */
+    cron: z.string().trim().min(1, '定时表达式不能为空'),
+  }),
+])
+export type AutomationTrigger = z.infer<typeof AutomationTrigger>
+
+export const AutomationInput = z.object({
+  name: z.string().trim().min(1, '名称不能为空'),
+  /** 关掉后定时不再触发（手动触发不受影响） */
+  enabled: z.boolean().default(true),
+  /** inline = 直接在页面里写的脚本；file = 服务器上已有的脚本文件 */
+  source: z.enum(['inline', 'file']).default('inline'),
+  content: z.string().default(''),
+  filePath: z.string().default(''),
+  /** 用什么来执行，比如 bash、python3、node；留空用系统默认的 shell（脚本文件留空则直接执行它） */
+  interpreter: z.string().default(''),
+  /** 工作目录，留空用脚本所在的目录 */
+  cwd: z.string().default(''),
+  env: z
+    .array(
+      z.object({
+        key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, '环境变量名只能是字母、数字、下划线，且不能以数字开头'),
+        value: z.string(),
+      }),
+    )
+    .default([]),
+  triggers: z.array(AutomationTrigger).default([]),
+  /** 允许在页面上（或通过接口）手动触发 */
+  manual: z.boolean().default(false),
+  timeoutSec: int.min(1).max(7 * 24 * 3600).default(3600),
+})
+export type AutomationInput = z.infer<typeof AutomationInput>
+
+export interface Automation extends AutomationInput {
+  id: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type AutomationTriggerKind = 'schedule' | 'manual'
+export type AutomationRunStatus = 'running' | 'success' | 'failed' | 'timeout' | 'killed'
+
+export interface AutomationRun {
+  id: number
+  automationId: number
+  trigger: AutomationTriggerKind
+  status: AutomationRunStatus
+  startedAt: number
+  finishedAt: number | null
+  exitCode: number | null
+  /** 标准输出和错误输出合在一起；列表接口不带 */
+  output?: string
+}
+
+export interface AutomationListItem extends Automation {
+  running: boolean
+  /** 下一次定时执行的时间，没有定时或已停用时为 null */
+  nextRun: number | null
+  lastRun: AutomationRun | null
+}
+
+export interface AutomationMeta {
+  /** 自动化是否可用（服务端可以用 AUTOMEDIA_AUTOMATION=off 关掉） */
+  enabled: boolean
+  platform: string
+  defaultInterpreter: string
+  /** 执行脚本时自动提供的环境变量；敏感的值不下发 */
+  env: { name: string; description: string; value: string; secret: boolean }[]
+}
+
 // ───────────────────────── 纯函数工具 ─────────────────────────
 
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' })

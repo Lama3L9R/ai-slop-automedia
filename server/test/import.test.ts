@@ -4,14 +4,27 @@ import os from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import zlib from 'node:zlib'
-import { ComicImportRequest, ImportRequest, MediaSaveInput, guessSubtitleSuffix, naturalCompare } from '@automedia/shared'
+import { AutomationInput, ComicImportRequest, ImportRequest, MediaSaveInput, guessSubtitleSuffix, naturalCompare } from '@automedia/shared'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import { parseItems, render } from '../src/ai/suggest'
-import { buildApp } from '../src/app'
+import { buildApp, requestHandlerOf } from '../src/app'
+import {
+  createAutomation,
+  deleteAutomation,
+  getRun,
+  idle,
+  listAutomations,
+  listRuns,
+  parseArgv,
+  startRun,
+  stopScheduler,
+  updateAutomation,
+} from '../src/automation/automation'
 import { openDb } from '../src/db'
 import { executeComicImport, getPages, planComicImport, setPageOrder } from '../src/comics/import'
 import { executeImport, planImport } from '../src/import/engine'
+import { describeRule, localAddresses, matcher, parseListen, startRestrictedListeners } from '../src/listen'
 import { parseEpisodes } from '../src/media/existing'
 import { createMedia, deleteMedia, getMediaDetail, removeLinks, saveMedia } from '../src/media/store'
 import { imagesIdle, syncMedia } from '../src/media/sync'
@@ -74,6 +87,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  stopScheduler()
   await imagesIdle()
   await fs.rm(tmp, { recursive: true, force: true })
 })
@@ -685,6 +699,206 @@ describe('漫画', () => {
     )
     expect(plan.map((p) => p.status)).toEqual(['error', 'error', 'error', 'error'])
     await deleteMedia(id)
+  })
+})
+
+describe('自动化', () => {
+  // 用 node 当解释器，测试在 Windows / macOS / Linux 上都能跑；路径带引号是因为 Windows 上有空格
+  const node = `"${process.execPath}"`
+  const make = (over: Record<string, unknown>) =>
+    createAutomation(AutomationInput.parse({ name: '测试脚本', interpreter: node, ...over }))
+
+  it('拆命令行参数', () => {
+    expect(parseArgv('bash -e')).toEqual(['bash', '-e'])
+    expect(parseArgv('"C:\\Program Files\\nodejs\\node.exe" --no-warnings')).toEqual(['C:\\Program Files\\nodejs\\node.exe', '--no-warnings'])
+  })
+
+  it('手动触发：脚本能拿到环境变量，输出和退出码被记录；没开手动触发的会被拒绝', async () => {
+    const a = await make({
+      manual: true,
+      env: [{ key: 'MY_VAR', value: '你好' }],
+      content:
+        "console.log(process.env.AUTOMEDIA_TRIGGER, process.env.MY_VAR, process.env.AUTOMEDIA_SCRIPT_NAME, process.env.AUTOMEDIA_API_URL)\r\nconsole.error('to-stderr')\r\nprocess.exit(3)",
+    })
+    const runId = await startRun(a.id, 'manual')
+    await expect(startRun(a.id, 'manual')).rejects.toThrow(/正在运行/)
+    await idle(a.id)
+    const run = getRun(runId)
+    expect(run).toMatchObject({ status: 'failed', exitCode: 3, trigger: 'manual' })
+    expect(run.output).toContain('manual 你好 测试脚本 http://127.0.0.1:')
+    expect(run.output).toContain('to-stderr')
+    expect(listRuns(a.id)[0].output).toBeUndefined() // 列表不带输出
+
+    const b = await make({ name: '只能定时', content: 'console.log("ok")' })
+    await expect(startRun(b.id, 'manual')).rejects.toThrow(/手动触发/)
+    const scheduled = await startRun(b.id, 'schedule')
+    await idle(b.id)
+    expect(getRun(scheduled)).toMatchObject({ status: 'success', exitCode: 0, trigger: 'schedule' })
+    await deleteAutomation(a.id)
+    await deleteAutomation(b.id)
+  })
+
+  it('服务器上已有的脚本文件；超时会被强制结束', async () => {
+    const script = path.join(tmp, 'hello.mjs')
+    await fs.writeFile(script, 'console.log("from file", process.cwd() === import.meta.dirname)')
+    const a = await make({ source: 'file', filePath: script, manual: true })
+    const runId = await startRun(a.id, 'manual')
+    await idle(a.id)
+    expect(getRun(runId)).toMatchObject({ status: 'success' })
+    expect(getRun(runId).output).toContain('from file true') // 工作目录默认是脚本所在的目录
+
+    const slow = await make({ name: '慢脚本', manual: true, timeoutSec: 1, content: 'console.log("start"); setTimeout(() => {}, 60000)' })
+    const slowRun = await startRun(slow.id, 'manual')
+    await idle(slow.id)
+    expect(getRun(slowRun).status).toBe('timeout')
+    expect(getRun(slowRun).output).toContain('start')
+    await deleteAutomation(a.id)
+    await deleteAutomation(slow.id)
+  })
+
+  it('定时：到点自动执行；停用后不再触发', async () => {
+    const a = await make({ content: 'console.log("tick")', triggers: [{ type: 'schedule', cron: '* * * * * *' }] })
+    expect(listAutomations().find((x) => x.id === a.id)?.nextRun).toBeGreaterThan(Date.now() - 1000)
+    for (let i = 0; i < 40 && !listRuns(a.id).some((r) => r.status === 'success'); i++) await new Promise((r) => setTimeout(r, 100))
+    const first = listRuns(a.id).find((r) => r.status === 'success')
+    expect(first).toMatchObject({ trigger: 'schedule', exitCode: 0 })
+
+    const { id: _i, createdAt: _c, updatedAt: _u, ...input } = a
+    await updateAutomation(a.id, { ...input, enabled: false })
+    await idle(a.id)
+    expect(listAutomations().find((x) => x.id === a.id)?.nextRun).toBeNull()
+    const count = listRuns(a.id).length
+    await new Promise((r) => setTimeout(r, 1300))
+    expect(listRuns(a.id).length).toBe(count)
+    await deleteAutomation(a.id)
+    expect(listAutomations().some((x) => x.id === a.id)).toBe(false)
+  })
+
+  it('保存时校验', async () => {
+    await expect(make({ content: 'x', triggers: [{ type: 'schedule', cron: '每天三点' }] })).rejects.toThrow(/定时表达式无效/)
+    await expect(make({ content: '   ' })).rejects.toThrow(/空的/)
+    await expect(make({ source: 'file', filePath: path.join(tmp, 'nope.sh') })).rejects.toThrow(/没有这个文件/)
+    await expect(make({ content: 'x', env: [{ key: 'A', value: '1' }, { key: 'A', value: '2' }] })).rejects.toThrow(/重名/)
+    expect(() => AutomationInput.parse({ name: 'x', env: [{ key: '1BAD', value: '' }] })).toThrow()
+  })
+})
+
+describe('漫画封面', () => {
+  it('上传后免密码可读，并落成媒体库目录里的 folder.jpg；清除后一并删掉', async () => {
+    const app = await buildApp({ password: 'secret', serveWeb: false })
+    const auth = { authorization: 'Bearer secret' }
+    const id = createMedia(MediaSaveInput.parse({ media: { kind: 'comic', title: '封面漫画', libraryId: 'anime' } }))
+    await executeComicImport(
+      ComicImportRequest.parse({
+        mediaId: id,
+        linkMode: 'copy',
+        sourceType: 'dir',
+        sourceRef: 'cover',
+        items: [{ path: path.join(tmp, 'downloads', '[漫画] 测试漫画', 'vol2'), season: 1, episode: 1 }],
+      }),
+    )
+    const dir = path.join(lib, '封面漫画')
+    const multipart = (data: string, type: string) => {
+      const boundary = 'automediatestboundary'
+      return {
+        headers: { ...auth, 'content-type': `multipart/form-data; boundary=${boundary}` },
+        payload: Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="cover"\r\nContent-Type: ${type}\r\n\r\n${data}\r\n--${boundary}--\r\n`,
+        ),
+      }
+    }
+
+    const bad = await app.inject({ method: 'POST', url: `/api/media/${id}/poster`, ...multipart('x', 'text/plain') })
+    expect(bad.statusCode).toBe(400)
+
+    const up = await app.inject({ method: 'POST', url: `/api/media/${id}/poster`, ...multipart('JPEG-ONE', 'image/jpeg') })
+    expect(up.statusCode).toBe(200)
+    const first: string = up.json().posterUrl
+    expect(first).toMatch(/^\/api\/posters\/[a-f0-9]{32}\.jpg$/)
+    expect(getMediaDetail(id).media.posterUrl).toBe(first)
+    const img = await app.inject({ url: first }) // 不带密码
+    expect([img.statusCode, img.headers['content-type'], img.body]).toEqual([200, 'image/jpeg', 'JPEG-ONE'])
+    expect(await read(path.join(dir, 'folder.jpg'))).toBe('JPEG-ONE')
+    expect((await app.inject({ url: '/api/posters/..%2Fautomedia.db' })).statusCode).toBe(404)
+
+    // 换一张：旧文件删掉，媒体库里的跟着换
+    const again = await app.inject({ method: 'POST', url: `/api/media/${id}/poster`, ...multipart('PNG-TWO', 'image/png') })
+    const second: string = again.json().posterUrl
+    expect((await app.inject({ url: first })).statusCode).toBe(404)
+    expect(await read(path.join(dir, 'folder.png'))).toBe('PNG-TWO')
+    expect(await has(path.join(dir, 'folder.jpg'))).toBe(false)
+
+    const del = await app.inject({ method: 'DELETE', url: `/api/media/${id}/poster`, headers: auth })
+    expect(del.json().posterUrl).toBe('')
+    expect((await app.inject({ url: second })).statusCode).toBe(404)
+    expect(await has(path.join(dir, 'folder.png'))).toBe(false)
+    await deleteMedia(id)
+    await app.close()
+  })
+})
+
+describe('只监听内网地址', () => {
+  const rules = parseListen('100.99.255.255, 192.168.5.255')!
+
+  it('网段的几种写法', () => {
+    expect(rules.map(describeRule)).toEqual(['100.99.0.0/16', '192.168.5.0/24'])
+    expect(parseListen('100.64.0.0/10,10.0.0.5 fd7a:115c:a1e0::/48')!.map(describeRule)).toEqual([
+      '100.64.0.0/10',
+      '10.0.0.5/32',
+      'fd7a:115c:a1e0::/48',
+    ])
+    expect(parseListen(undefined)).toBeNull()
+    expect(parseListen('  ')).toBeNull()
+    for (const bad of ['192.168.5', '192.168.5.0/33', 'lan', '192.168.5.0/24/1']) expect(() => parseListen(bad)).toThrow(/AUTOMEDIA_LISTEN/)
+  })
+
+  it('判断一个地址在不在网段里', () => {
+    const inside = matcher(rules)
+    expect(['192.168.5.3', '::ffff:192.168.5.200', '100.99.12.34'].map(inside)).toEqual([true, true, true])
+    expect(['192.168.6.3', '100.100.1.1', '8.8.8.8', '127.0.0.1', undefined, 'garbage'].map(inside)).toEqual([false, false, false, false, false, false])
+  })
+
+  it('从本机网卡里挑出要监听的地址', () => {
+    const nic = (address: string, family: 'IPv4' | 'IPv6' = 'IPv4') =>
+      ({ address, family, netmask: '', mac: '', internal: false, cidr: null, scopeid: 0 }) as never
+    const interfaces = {
+      lo0: [nic('127.0.0.1')],
+      en0: [nic('192.168.5.3'), nic('fe80::1', 'IPv6')],
+      utun4: [nic('100.99.12.34'), nic('fd7a:115c:a1e0::1234', 'IPv6')],
+      en5: [nic('203.0.113.7')], // 公网地址：不监听
+    }
+    expect(localAddresses(rules, interfaces).sort()).toEqual(['100.99.12.34', '192.168.5.3'])
+  })
+
+  it('在挑出来的地址上提供服务；网卡变化后跟着增减', async () => {
+    const app = await buildApp({ password: 'secret', serveWeb: false })
+    await app.ready()
+    let up = true
+    const logs: string[] = []
+    const listeners = startRestrictedListeners({
+      handler: requestHandlerOf(app),
+      rules: parseListen('127.0.0.0/8')!, // 测试机上一定存在的「内网」地址
+      port: 0,
+      includeLoopback: true,
+      rescanMs: 50,
+      log: (m) => logs.push(m),
+      interfaces: () =>
+        up ? { lo: [{ address: '127.0.0.1', family: 'IPv4', netmask: '', mac: '', internal: true, cidr: null }] } : {},
+    })
+    await new Promise((r) => setTimeout(r, 150))
+    expect(listeners.addresses()).toEqual(['127.0.0.1'])
+    const port = listeners.portOf('127.0.0.1')!
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`)
+    expect([res.status, await res.json()]).toEqual([200, { ok: true }])
+    expect((await fetch(`http://127.0.0.1:${port}/api/media`)).status).toBe(401) // 密码校验照常
+
+    up = false // 这个地址从本机上消失了
+    await new Promise((r) => setTimeout(r, 200))
+    expect(listeners.addresses()).toEqual([])
+    await expect(fetch(`http://127.0.0.1:${port}/api/health`)).rejects.toThrow()
+    expect(logs.some((l) => l.includes('不再监听 127.0.0.1'))).toBe(true)
+    listeners.stop()
+    await app.close()
   })
 })
 

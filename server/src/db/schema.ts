@@ -1,3 +1,4 @@
+import type { AutomationTrigger } from '@automedia/shared'
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 export const settings = sqliteTable('settings', {
@@ -91,6 +92,39 @@ export const artifacts = sqliteTable('artifacts', {
   mediaId: integer('media_id').notNull(),
   sourceUrl: text('source_url').notNull().default(''),
 })
+
+/** 自动化脚本 */
+export const automations = sqliteTable('automations', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  source: text('source').notNull().default('inline'),
+  content: text('content').notNull().default(''),
+  filePath: text('file_path').notNull().default(''),
+  interpreter: text('interpreter').notNull().default(''),
+  cwd: text('cwd').notNull().default(''),
+  env: text('env', { mode: 'json' }).$type<{ key: string; value: string }[]>().notNull(),
+  triggers: text('triggers', { mode: 'json' }).$type<AutomationTrigger[]>().notNull(),
+  manual: integer('manual', { mode: 'boolean' }).notNull().default(false),
+  timeoutSec: integer('timeout_sec').notNull().default(3600),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+})
+
+export const automationRuns = sqliteTable(
+  'automation_runs',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    automationId: integer('automation_id').notNull(),
+    trigger: text('trigger').notNull(),
+    status: text('status').notNull(),
+    startedAt: integer('started_at').notNull(),
+    finishedAt: integer('finished_at'),
+    exitCode: integer('exit_code'),
+    output: text('output').notNull().default(''),
+  },
+  (t) => [index('automation_runs_idx').on(t.automationId)],
+)
 
 /** 种子的导入状态（只存在本工具里，不改 qB） */
 export const torrents = sqliteTable('torrents', {

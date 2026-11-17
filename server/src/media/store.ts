@@ -17,6 +17,7 @@ import { asc, eq, inArray, sql } from 'drizzle-orm'
 import { db, schema } from '../db'
 import { badRequest, notFound } from '../errors'
 import { pruneEmptyDirs, removeFile } from '../util/fs'
+import { removeLocalPoster } from './poster'
 
 type MediaRow = typeof schema.media.$inferSelect
 type LinkRow = typeof schema.links.$inferSelect
@@ -170,7 +171,9 @@ export function createMedia(input: SaveInput): number {
 }
 
 export function saveMedia(id: number, input: SaveInput): void {
-  getMedia(id)
+  const before = getMedia(id)
+  // 封面换成了别的：之前上传的那张本地文件不再有人用
+  if (before.posterUrl !== input.media.posterUrl) void removeLocalPoster(before.posterUrl)
   const { seasons, episodes } = normalize(input)
 
   // 改了季号：已导入的文件跟着换季（磁盘上的改名由之后的 sync 完成）
@@ -215,6 +218,7 @@ export async function deleteMedia(id: number): Promise<void> {
   const arts = d.select().from(schema.artifacts).where(eq(schema.artifacts.mediaId, id)).all()
   for (const l of links) await removeFile(l.targetPath)
   for (const a of arts) await removeFile(a.path)
+  await removeLocalPoster(media.posterUrl)
   if (media.folderPath) await pruneEmptyDirs(media.folderPath)
   d.transaction((tx) => {
     tx.delete(schema.links).where(eq(schema.links.mediaId, id)).run()

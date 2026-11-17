@@ -1,6 +1,7 @@
 import { naturalCompare, type Link } from '@automedia/shared'
 import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup } from 'solid-js'
 import { api, apiBlob } from '../api'
+import { uploadCover } from '../cover'
 import { Modal, baseName, toast, useAction } from '../ui'
 
 /**
@@ -14,6 +15,8 @@ export default function ComicPages(props: {
   title: string
   onClose: () => void
   onSaved: () => void
+  /** 把某一页设成了这部漫画的封面 */
+  onCover?: (posterUrl: string) => void
 }) {
   const [original, setOriginal] = createSignal<Link[]>([])
   const [pages, setPages] = createSignal<Link[]>([])
@@ -91,6 +94,13 @@ export default function ComicPages(props: {
     toast.ok('顺序已保存，媒体库已更新')
     props.onSaved()
   })
+  const [setAsCover, covering] = useAction(async () => {
+    const p = pages()[current()]
+    if (!p) return
+    const url = await uploadCover(props.mediaId, await apiBlob(`/links/${p.id}/file`))
+    toast.ok('已把这一页设为漫画封面')
+    props.onCover?.(url)
+  })
   const close = () => {
     if (!dirty() || confirm('页面顺序还没保存，确定关闭？')) props.onClose()
   }
@@ -105,6 +115,9 @@ export default function ComicPages(props: {
           <span class="mr-auto text-xs text-slate-500">
             共 {pages().length} 页{removed() ? `，将移除 ${removed()} 页` : ''}。第一页是这一集的封面。 ↑↓ 翻页，Alt + ↑↓ 移动当前页，也可以拖动。
           </span>
+          <button class="btn" disabled={covering() || !pages().length} onClick={() => void setAsCover()} title="把右边正在预览的这一页设为整部漫画的封面">
+            {covering() ? '处理中…' : '设为漫画封面'}
+          </button>
           <button class="btn" onClick={() => (setPages([...pages()].sort((a, b) => naturalCompare(a.sourcePath, b.sourcePath))), select(0))}>
             按文件名排序
           </button>

@@ -1,5 +1,6 @@
 import {
   AiSuggestInput,
+  AutomationInput,
   FromProviderInput,
   ImportRequest,
   LookupBy,
@@ -10,14 +11,29 @@ import {
   TorrentStateInput,
   ComicImportRequest,
   PageOrderInput,
+  type AutomationMeta,
   type ImportPlan,
   type MediaDetail,
 } from '@automedia/shared'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { suggest } from './ai/suggest'
+import {
+  automationEnabled,
+  createAutomation,
+  cronPreview,
+  defaultInterpreter,
+  deleteAutomation,
+  getRun,
+  listAutomations,
+  listRuns,
+  providedEnv,
+  startRun,
+  stopRun,
+  updateAutomation,
+} from './automation/automation'
 import { ensureExtracted, executeComicImport, getPages, planComicImport, setPageOrder } from './comics/import'
-import { createReadStream } from 'node:fs'
+import { createReadStream, existsSync } from 'node:fs'
 import { eq } from 'drizzle-orm'
 import { db, schema } from './db'
 import { badRequest, notFound } from './errors'
@@ -31,6 +47,7 @@ import {
   removeLinks,
   saveMedia,
 } from './media/store'
+import { POSTER_MIME, posterPathOf, removeLocalPoster, savePoster } from './media/poster'
 import { syncMedia } from './media/sync'
 import { getProvider, listProviders, mergeProvider } from './providers'
 import { getSettings, saveSettings } from './settings'
@@ -195,4 +212,71 @@ export function registerRoutes(app: FastifyInstance) {
 
   // ── AI ──
   app.post('/api/ai/suggest', async (req) => suggest(AiSuggestInput.parse(req.body)))
+
+  // ── 封面（上传的 / 从漫画页面里选的）──
+  app.get('/api/posters/:name', async (req, reply) => {
+    const { name } = z.object({ name: z.string() }).parse(req.params)
+    const file = posterPathOf(name)
+    if (!file || !existsSync(file)) throw notFound('没有这张封面')
+    return reply
+      .type(POSTER_MIME[name.split('.').pop()!])
+      .header('cache-control', 'public, max-age=31536000, immutable')
+      .send(createReadStream(file))
+  })
+
+  app.post('/api/media/:id/poster', async (req) => {
+    const { id } = idParam.parse(req.params)
+    const before = getMedia(id)
+    const part = await req.file({ limits: { fileSize: 10 * 1024 * 1024 } })
+    if (!part) throw badRequest('没有收到图片')
+    const posterUrl = await savePoster(part.file, part.mimetype)
+    db().update(schema.media).set({ posterUrl, updatedAt: Date.now() }).where(eq(schema.media.id, id)).run()
+    await removeLocalPoster(before.posterUrl)
+    const { warnings } = await syncMedia(id)
+    return { posterUrl, warnings }
+  })
+
+  app.delete('/api/media/:id/poster', async (req) => {
+    const { id } = idParam.parse(req.params)
+    const before = getMedia(id)
+    db().update(schema.media).set({ posterUrl: '', updatedAt: Date.now() }).where(eq(schema.media.id, id)).run()
+    await removeLocalPoster(before.posterUrl)
+    const { warnings } = await syncMedia(id)
+    return { posterUrl: '', warnings }
+  })
+
+  // ── 自动化 ──
+  app.get('/api/automations/meta', async (): Promise<AutomationMeta> => ({
+    enabled: automationEnabled(),
+    platform: process.platform,
+    defaultInterpreter: defaultInterpreter(),
+    env: providedEnv().map((v) => ({
+      name: v.name,
+      description: v.description,
+      value: v.secret ? '' : v.value,
+      secret: !!v.secret,
+    })),
+  }))
+  app.get('/api/automations', async () => listAutomations())
+  app.post('/api/automations', async (req) => createAutomation(AutomationInput.parse(req.body)))
+  app.put('/api/automations/:id', async (req) =>
+    updateAutomation(idParam.parse(req.params).id, AutomationInput.parse(req.body)),
+  )
+  app.delete('/api/automations/:id', async (req) => {
+    await deleteAutomation(idParam.parse(req.params).id)
+    return { ok: true }
+  })
+  /** 校验 cron 表达式，并给出接下来几次的执行时间 */
+  app.post('/api/automations/cron', async (req) => ({
+    next: cronPreview(z.object({ cron: z.string() }).parse(req.body).cron),
+  }))
+  app.post('/api/automations/:id/run', async (req) => ({
+    runId: await startRun(idParam.parse(req.params).id, 'manual'),
+  }))
+  app.post('/api/automations/:id/stop', async (req) => {
+    await stopRun(idParam.parse(req.params).id)
+    return { ok: true }
+  })
+  app.get('/api/automations/:id/runs', async (req) => listRuns(idParam.parse(req.params).id))
+  app.get('/api/automation-runs/:id', async (req) => getRun(idParam.parse(req.params).id))
 }

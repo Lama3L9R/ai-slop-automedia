@@ -1,6 +1,7 @@
 import { A, Route, Router, type RouteSectionProps } from '@solidjs/router'
 import { Show, createSignal } from 'solid-js'
 import { api, password, setPassword } from './api'
+import AutomationPage from './pages/Automation'
 import MediaDetailPage from './pages/MediaDetail'
 import ComicWizardPage from './pages/ComicWizard'
 import MediaListPage, { ComicListPage } from './pages/MediaList'
@@ -69,6 +70,9 @@ function Layout(props: RouteSectionProps) {
           <A href="/sources" class={link} activeClass="bg-slate-100 font-medium text-slate-900">
             来源
           </A>
+          <A href="/automation" class={link} activeClass="bg-slate-100 font-medium text-slate-900">
+            自动化
+          </A>
           <A href="/settings" class={link} activeClass="bg-slate-100 font-medium text-slate-900">
             设置
           </A>
@@ -93,6 +97,7 @@ export default function App() {
           <Route path="/sources" component={SourcesPage} />
           <Route path="/import-comic" component={ComicWizardPage} />
           <Route path="/import" component={WizardPage} />
+          <Route path="/automation" component={AutomationPage} />
           <Route path="/settings" component={SettingsPage} />
         </Router>
       </Show>

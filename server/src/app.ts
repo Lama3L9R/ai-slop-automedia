@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import http from 'node:http'
 import multipart from '@fastify/multipart'
 import fastifyStatic from '@fastify/static'
 import Fastify, { type FastifyInstance } from 'fastify'
@@ -10,8 +11,22 @@ import { registerRoutes } from './routes'
 
 const sha = (s: string) => createHash('sha256').update(s).digest()
 
+const handlers = new WeakMap<FastifyInstance, http.RequestListener>()
+/** 这个 app 的原始请求处理函数，可以直接交给 http.createServer */
+export const requestHandlerOf = (app: FastifyInstance) => handlers.get(app)!
+
 export async function buildApp(opts: { password: string; serveWeb?: boolean }): Promise<FastifyInstance> {
-  const app = Fastify({ logger: { level: 'warn' }, bodyLimit: 32 * 1024 * 1024 })
+  let handler!: http.RequestListener
+  const app = Fastify({
+    logger: { level: 'warn' },
+    bodyLimit: 32 * 1024 * 1024,
+    // 把请求处理函数留一份：「只监听内网地址」时要在多个地址上各起一个服务，共用它（见 listen.ts）
+    serverFactory: (h) => {
+      handler = h
+      return http.createServer(h)
+    },
+  })
+  handlers.set(app, handler)
   await app.register(multipart, { limits: { fileSize: 1024 * 1024 * 1024, files: 100 } })
 
   // 认证：Authorization: Bearer <密码>。网页和直接调 API 用的是同一套。
@@ -19,6 +34,8 @@ export async function buildApp(opts: { password: string; serveWeb?: boolean }): 
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0]
     if (!url.startsWith('/api/') || url === '/api/health') return
+    // 本地封面：文件名是随机的，地址本身就是凭证，<img> 才能直接显示
+    if (req.method === 'GET' && url.startsWith('/api/posters/')) return
     const header = req.headers.authorization ?? ''
     const token = header.startsWith('Bearer ') ? header.slice(7) : ''
     if (!token || !timingSafeEqual(sha(token), expected))

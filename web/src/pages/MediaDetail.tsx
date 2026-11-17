@@ -13,6 +13,7 @@ import { A, useNavigate, useParams } from '@solidjs/router'
 import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on } from 'solid-js'
 import { createStore, reconcile, unwrap } from 'solid-js/store'
 import { api, upload } from '../api'
+import { uploadCover } from '../cover'
 import { Field, Section, baseName, toast, useAction } from '../ui'
 import ComicPages from './ComicPages'
 import { Poster } from './MediaList'
@@ -102,6 +103,23 @@ export default function MediaDetailPage() {
   /** 漫画：这一集导入了多少页 */
   const pageCount = (season: number, number: number) =>
     detail()?.pageCounts.find((c) => currentSeason(c.season) === season && c.episode === number)?.count ?? 0
+  // ── 漫画封面：上传的和从页面里选的都直接存到服务端，不经过「保存」──
+  let coverInput!: HTMLInputElement
+  /** 服务端已经存好了，这里只同步表单里的值，不算未保存的修改 */
+  const applyCover = (url: string) => setForm('media', 'posterUrl', url)
+  const [setCover, coverBusy] = useAction(async (image: Blob) => {
+    applyCover(await uploadCover(Number(params.id), image))
+    toast.ok('封面已更新')
+  })
+  const [clearCover] = useAction(async () => {
+    await api(`/media/${params.id}/poster`, { method: 'DELETE' })
+    applyCover('')
+  })
+  function pickCoverFromPages() {
+    const first = [...(detail()?.pageCounts ?? [])].sort((a, b) => a.season - b.season || a.episode - b.episode)[0]
+    if (!first) return toast.err('还没有导入任何页面，先导入再来选封面')
+    openPages(first.season, first.episode, form.episodes.find((e) => e.season === first.season && e.number === first.episode)?.title ?? '')
+  }
   function openPages(season: number, episode: number, title: string) {
     if (dirty()) return toast.err('有未保存的修改，请先保存再调整页面')
     setPagesOf({ season, episode, title: `S${pad2(season)}E${String(episode).padStart(3, '0')} ${title}` })
@@ -288,7 +306,33 @@ export default function MediaDetailPage() {
 
       <Section title="基本信息" desc={detail()!.media.folderPath || '尚未导入任何文件，媒体库里还没有它的目录。'}>
         <div class="flex gap-4">
-          <Poster url={form.media.posterUrl} class="hidden h-60 w-40 shrink-0 sm:flex" />
+          <div class="hidden w-40 shrink-0 flex-col gap-2 sm:flex">
+            <Poster url={form.media.posterUrl} class="h-60 w-40" />
+            <Show when={isComic()}>
+              <input
+                ref={coverInput}
+                type="file"
+                accept="image/*"
+                class="hidden"
+                onChange={(e) => {
+                  const file = e.currentTarget.files?.[0]
+                  e.currentTarget.value = ''
+                  if (file) void setCover(file)
+                }}
+              />
+              <button class="btn btn-sm" disabled={coverBusy()} onClick={() => coverInput.click()}>
+                {coverBusy() ? '处理中…' : '上传封面'}
+              </button>
+              <button class="btn btn-sm" onClick={pickCoverFromPages} title="打开页面列表，翻到想要的那一页，点「设为漫画封面」">
+                从漫画页面里选
+              </button>
+              <Show when={form.media.posterUrl}>
+                <button class="btn btn-sm" onClick={() => void clearCover()}>
+                  清除封面
+                </button>
+              </Show>
+            </Show>
+          </div>
           <div class="grid flex-1 gap-3 sm:grid-cols-4">
             <Field class="sm:col-span-2" label="标题">
               <input class="input" {...text('title')} />
@@ -395,7 +439,7 @@ export default function MediaDetailPage() {
               />
             </Field>
             </Show>
-            <Field class="sm:col-span-2" label={isComic() ? '封面 URL（只在本工具里显示）' : '海报 URL'}>
+            <Field class="sm:col-span-2" label={isComic() ? '封面 URL（用左边的按钮上传或从页面里选，也可以直接填一个网址）' : '海报 URL'}>
               <input class="input font-mono text-xs" {...text('posterUrl')} />
             </Field>
             <Show when={!isComic()}>
@@ -634,6 +678,7 @@ export default function MediaDetailPage() {
             episode={p().episode}
             title={p().title}
             onClose={() => setPagesOf(null)}
+            onCover={applyCover}
             onSaved={() => void api<MediaDetail>(`/media/${params.id}`).then(setDetail, toast.err)}
           />
         )}

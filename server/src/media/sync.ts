@@ -13,6 +13,7 @@ import { extFetch } from '../util/http'
 import { discoverSeasonDirs, renameSidecars } from './existing'
 import { buildLayout, mediaFolderName, type Layout } from './layout'
 import { episodeNfo, movieNfo, seasonNfo, tvshowNfo } from './nfo'
+import { localPosterPath } from './poster'
 import { getLinks, getMediaDetail } from './store'
 
 export interface SyncResult {
@@ -22,6 +23,8 @@ export interface SyncResult {
 type Artifact =
   | { content: string }
   | { url: string }
+  /** 把本地的一个文件拷过去（上传的封面）。signature 变了才重新拷 */
+  | { file: string; signature: string }
   /** 一集漫画的 cbz。signature 变了（页面、顺序、元数据）才重新打包 */
   | { cbz: { comicInfo: string; pages: { source: string; name: string }[] }; signature: string }
 
@@ -40,6 +43,11 @@ function computeArtifacts(detail: MediaDetail, layout: Layout, dir: string, lock
   const { media, seasons, episodes, links } = detail
   const out = new Map<string, Artifact>()
   if (media.kind === 'comic') {
+    // 封面：Emby 把文件夹里的 folder.jpg 当作这个文件夹的图
+    const poster = media.posterUrl.trim()
+    const local = localPosterPath(poster)
+    if (local) out.set(path.join(dir, `folder${path.extname(local)}`), { file: local, signature: poster })
+    else if (/^https?:\/\//i.test(poster)) out.set(path.join(dir, `folder.${imageExt(poster)}`), { url: poster })
     // 图片模式进的是图片库，没有可写的元数据；CBZ 模式一集打一个包，ComicInfo.xml 放在包里
     if (media.comicFormat !== 'cbz') return out
     const groups = new Map<string, Link[]>()
@@ -298,6 +306,18 @@ async function doSync(id: number): Promise<SyncResult> {
         await fs.mkdir(path.dirname(p), { recursive: true })
         await fs.writeFile(p, art.content, 'utf8')
         if (!existingMap.has(p)) d.insert(schema.artifacts).values({ path: p, mediaId: id }).onConflictDoNothing().run()
+      } else if ('file' in art) {
+        const row = existingMap.get(p)
+        const there = await exists(p)
+        if (row?.sourceUrl === art.signature && there) continue
+        // 已有同名图片但不是本工具放的 → 不覆盖
+        if (there && !row) continue
+        await fs.mkdir(path.dirname(p), { recursive: true })
+        await fs.copyFile(art.file, p)
+        d.insert(schema.artifacts)
+          .values({ path: p, mediaId: id, sourceUrl: art.signature })
+          .onConflictDoUpdate({ target: schema.artifacts.path, set: { mediaId: id, sourceUrl: art.signature } })
+          .run()
       } else if ('cbz' in art) {
         const row = existingMap.get(p)
         const there = await exists(p)
