@@ -5,6 +5,7 @@ import {
   type AutomationMeta,
   type AutomationRun,
   type AutomationRunStatus,
+  type ScriptFile,
 } from '@automedia/shared'
 import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup } from 'solid-js'
 import { createStore, reconcile, unwrap } from 'solid-js/store'
@@ -53,6 +54,44 @@ export default function AutomationPage() {
   const [dirty, setDirty] = createSignal(false)
   const [showEnv, setShowEnv] = createSignal(false)
 
+  // ───────── 「服务器上已有的脚本文件」：直接编辑文件本身 ─────────
+  const [file, setFile] = createSignal<ScriptFile | null>(null)
+  /** 打开文件时路径框里写的是什么；路径框改了之后编辑器先收起来，避免改的不是同一个文件 */
+  const [openedAs, setOpenedAs] = createSignal('')
+  const [fileText, setFileText] = createSignal('')
+  const [fileDirty, setFileDirty] = createSignal(false)
+  const [fileError, setFileError] = createSignal('')
+  const fileOpen = () => file() !== null && openedAs() === form.filePath.trim()
+  function resetFile() {
+    setFile(null)
+    setOpenedAs('')
+    setFileText('')
+    setFileDirty(false)
+    setFileError('')
+  }
+  const [openFile, opening] = useAction(async (quiet?: boolean) => {
+    const p = form.filePath.trim()
+    if (!p) return
+    if (fileDirty() && !confirm('文件内容有未保存的修改，重新读取会丢掉它们，确定？')) return
+    setFileError('')
+    try {
+      const r = await api<ScriptFile>('/automations/script-file/read', { body: { path: p } })
+      setFile(r)
+      setOpenedAs(p)
+      setFileText(r.content)
+      setFileDirty(false)
+    } catch (e) {
+      resetFile()
+      setFileError(e instanceof Error ? e.message : String(e))
+      if (!quiet) throw e
+    }
+  })
+  function editFile(text: string) {
+    setFileText(text)
+    setFileDirty(true)
+    setDirty(true)
+  }
+
   const current = createMemo(() => {
     const id = selected()
     return typeof id === 'number' ? (list() ?? []).find((a) => a.id === id) : undefined
@@ -74,6 +113,8 @@ export default function AutomationPage() {
     setScheduleOn(!!schedule)
     setCron(schedule?.cron ?? '0 3 * * *')
     setDirty(false)
+    resetFile()
+    if (input.source === 'file' && input.filePath.trim()) void openFile(true)
   }
   function select(id: number | 'new' | null) {
     if (dirty() && !confirm('当前脚本有未保存的修改，确定离开？')) return
@@ -106,6 +147,16 @@ export default function AutomationPage() {
   })
   const [save, saving] = useAction(async () => {
     const id = selected()
+    if (form.source === 'file' && fileDirty()) {
+      const f = file()
+      if (!f || !fileOpen()) throw new Error('脚本文件的路径改过了：先点「打开文件」打开新路径，或者把路径改回去')
+      const written = await api<ScriptFile>('/automations/script-file', {
+        method: 'PUT',
+        body: { path: f.path, content: fileText(), expectedMtime: f.mtimeMs, eol: f.eol, bom: f.bom },
+      })
+      setFile(written)
+      setFileDirty(false)
+    }
     const saved =
       typeof id === 'number'
         ? await api<Automation>(`/automations/${id}`, { method: 'PUT', body: payload() })
@@ -160,14 +211,16 @@ export default function AutomationPage() {
   })
 
   /** 编辑器里按 Tab 插入两个空格，而不是跳到下一个输入框 */
-  function onEditorKey(e: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
+  const tabInserter = (set: (value: string) => void) => (e: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) => {
     if (e.key !== 'Tab' || e.shiftKey || e.isComposing) return
     e.preventDefault()
     const el = e.currentTarget
     const { selectionStart: s, selectionEnd: end } = el
     el.setRangeText('  ', s, end, 'end')
-    edit('content', el.value)
+    set(el.value)
   }
+  const onEditorKey = tabInserter((v) => edit('content', v))
+  const onFileEditorKey = tabInserter(editFile)
 
   return (
     <>
@@ -290,13 +343,46 @@ export default function AutomationPage() {
                 </Show>
                 <Show when={form.source === 'file'}>
                   <Field class="sm:col-span-4" label="脚本文件的路径" hint="服务器上的绝对路径。每次执行都读这个文件的最新内容。">
-                    <input
-                      class="input font-mono"
-                      placeholder="/Users/me/scripts/cleanup.sh"
-                      value={form.filePath}
-                      onInput={(e) => edit('filePath', e.currentTarget.value)}
-                    />
+                    <div class="flex gap-2">
+                      <input
+                        class="input font-mono"
+                        placeholder="/Users/me/scripts/cleanup.sh"
+                        value={form.filePath}
+                        onInput={(e) => edit('filePath', e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.isComposing) {
+                            e.preventDefault()
+                            void openFile()
+                          }
+                        }}
+                      />
+                      <button class="btn shrink-0" type="button" disabled={opening() || !form.filePath.trim()} onClick={() => void openFile()}>
+                        {fileOpen() ? '重新读取' : '打开文件'}
+                      </button>
+                    </div>
                   </Field>
+                  <Show when={fileError()}>
+                    <p class="rounded bg-red-50 p-2 text-xs text-red-700 sm:col-span-4">{fileError()}</p>
+                  </Show>
+                  <Show when={fileOpen() && file()}>
+                    {(f) => (
+                      <Field
+                        class="sm:col-span-4"
+                        label={f().exists ? '文件内容' : '文件内容（这个文件还不存在，保存时新建）'}
+                        hint={`点「保存」时一起写回 ${f().path}。换行符（${f().eol === 'crlf' ? 'CRLF' : 'LF'}）和编码保持原样；如果这期间文件在别处被改过，会拒绝覆盖。`}
+                      >
+                        <textarea
+                          class="input font-mono text-xs leading-5"
+                          rows={16}
+                          spellcheck={false}
+                          wrap="off"
+                          value={fileText()}
+                          onInput={(e) => editFile(e.currentTarget.value)}
+                          onKeyDown={onFileEditorKey}
+                        />
+                      </Field>
+                    )}
+                  </Show>
                 </Show>
 
                 <Field

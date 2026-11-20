@@ -15,9 +15,10 @@ import {
   type TreeNode,
 } from '@automedia/shared'
 import { A, useSearchParams } from '@solidjs/router'
-import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on } from 'solid-js'
+import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on, untrack } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import { api } from '../api'
+import { rankedMediaOptions } from '../match'
 import { Combobox, Modal, baseName, toast, useAction } from '../ui'
 
 interface Assign {
@@ -45,14 +46,15 @@ export default function WizardPage() {
   const sourceType = () => (params.type === 'torrent' ? 'torrent' : 'dir') as 'torrent' | 'dir'
   const sourceRef = () => String(params.ref ?? '')
 
-  const [tree, { refetch }] = createResource(
+  const [treeRes, { refetch }] = createResource(
     () => ({ type: sourceType(), ref: sourceRef() }),
     (q) => api<SourceTree>('/sources/tree', { query: q }),
   )
+  /** 读取失败时 tree() 返回 undefined，而不是把错误抛出去（抛出去会让整个页面卡在「正在读取」） */
+  const tree = () => (treeRes.error ? undefined : treeRes())
   const [mediaList] = createResource(async () =>
     (await api<MediaListItem[]>('/media'))
-      .filter((m) => m.kind !== 'comic')
-      .sort((a, b) => naturalCompare(a.title, b.title)),
+      .filter((m) => m.kind !== 'comic'),
   )
   const [settings] = createResource(() => api<Settings>('/settings'))
 
@@ -117,6 +119,32 @@ export default function WizardPage() {
       prefill(mediaId())
     }),
   )
+
+
+  /** 下拉框按和来源名的相似度排序；没有导入记录、也没有指定媒体时，自动选中最像的那个 */
+  const ranked = createMemo(() => rankedMediaOptions(tree()?.name ?? '', mediaList() ?? []))
+  const [autoPicked, setAutoPicked] = createSignal<number | null>(null)
+  let autoDone = false
+  createEffect(() => {
+    const t = tree()
+    const list = mediaList()
+    if (autoDone || !t || !list) return
+    autoDone = true
+    untrack(() => {
+      if (mediaId() !== null || t.links.length) return
+      const top = ranked().top
+      if (!top) return
+      setMediaId(top.item.id)
+      setAutoPicked(top.item.id)
+      prefill(top.item.id)
+    })
+  })
+  const autoHint = () => {
+    const id = autoPicked()
+    if (id === null || id !== mediaId()) return ''
+    const o = ranked().options.find((x) => x.value === id)
+    return o ? `按来源名自动选中（相似度 ${o.hint}），不对的话换一个媒体` : ''
+  }
 
   const isAssigned = (p: string) => assign[p]?.season != null && assign[p]?.episode != null
   const assignedFiles = createMemo(() => importable().filter((n) => isAssigned(n.path)))
@@ -305,7 +333,17 @@ export default function WizardPage() {
         </div>
       </div>
 
-      <Show when={!tree.error} fallback={<p class="rounded bg-red-50 p-3 text-red-700">{String(tree.error?.message ?? tree.error)}</p>}>
+      <Show
+        when={!treeRes.error}
+        fallback={
+          <div class="flex items-center gap-3 rounded bg-red-50 p-3 text-red-700">
+            <span class="min-w-0 flex-1 break-all">读取文件列表失败：{String(treeRes.error?.message ?? treeRes.error)}</span>
+            <button class="btn btn-sm shrink-0" disabled={treeRes.loading} onClick={() => void refetch()}>
+              重试
+            </button>
+          </div>
+        }
+      >
         <div class="card sticky top-[49px] z-20 mb-3 shadow-sm">
           <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2">
             <span class="text-xs text-slate-500">导入到</span>
@@ -314,12 +352,15 @@ export default function WizardPage() {
               placeholder="输入标题筛选，选择媒体"
               empty="没有匹配的媒体"
               value={mediaId()}
-              options={(mediaList() ?? []).map((m) => ({ value: m.id, label: `${m.title}${m.year ? ` (${m.year})` : ''}` }))}
+              options={ranked().options}
               onChange={changeMedia}
             />
             <A href="/" target="_blank" class="text-xs text-indigo-600 hover:underline">
               新建媒体 ↗
             </A>
+            <Show when={autoHint()}>
+              <span class="text-xs text-amber-600">{autoHint()}</span>
+            </Show>
             <span class="ml-auto text-xs text-slate-500">AI</span>
             <button class="btn btn-sm" disabled={aiBusy()} onClick={() => void runAi('video', false)}>
               {aiBusy() ? '匹配中…' : '自动匹配视频'}

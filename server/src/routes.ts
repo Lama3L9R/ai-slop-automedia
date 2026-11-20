@@ -11,6 +11,7 @@ import {
   TorrentStateInput,
   ComicImportRequest,
   PageOrderInput,
+  ScriptFileWrite,
   type AutomationMeta,
   type ImportPlan,
   type MediaDetail,
@@ -26,6 +27,8 @@ import {
   deleteAutomation,
   getRun,
   listAutomations,
+  readScriptFile,
+  writeScriptFile,
   listRuns,
   providedEnv,
   startRun,
@@ -257,6 +260,9 @@ export function registerRoutes(app: FastifyInstance) {
       secret: !!v.secret,
     })),
   }))
+  /** 读 / 写服务器上的脚本文件（「服务器上已有的脚本文件」模式下直接编辑它） */
+  app.post('/api/automations/script-file/read', async (req) => readScriptFile(z.object({ path: z.string() }).parse(req.body).path))
+  app.put('/api/automations/script-file', async (req) => writeScriptFile(ScriptFileWrite.parse(req.body)))
   app.get('/api/automations', async () => listAutomations())
   app.post('/api/automations', async (req) => createAutomation(AutomationInput.parse(req.body)))
   app.put('/api/automations/:id', async (req) =>

@@ -205,7 +205,8 @@ export function PathInput(props: { value: string; onChange: (v: string) => void;
 // ───────────────────────── 可输入筛选的下拉框 ─────────────────────────
 
 export function Combobox(props: {
-  options: { value: number; label: string }[]
+  /** hint：显示在选项右边的灰色小字，不参与筛选 */
+  options: { value: number; label: string; hint?: string }[]
   value: number | null
   onChange: (value: number) => void
   placeholder?: string
@@ -284,7 +285,7 @@ export function Combobox(props: {
           <For each={filtered()} fallback={<div class="px-2 py-2 text-slate-400">{props.empty ?? '没有匹配项'}</div>}>
             {(o, i) => (
               <div
-                class="cursor-pointer truncate px-2 py-1.5"
+                class="flex cursor-pointer items-baseline gap-2 px-2 py-1.5"
                 classList={{ 'bg-indigo-100': i() === active(), 'font-semibold text-indigo-700': o.value === props.value }}
                 title={o.label}
                 // mousedown 而不是 click：赶在输入框失焦（会关闭下拉）之前选中
@@ -294,7 +295,10 @@ export function Combobox(props: {
                 }}
                 onMouseEnter={() => setActive(i())}
               >
-                {o.label}
+                <span class="min-w-0 flex-1 truncate">{o.label}</span>
+                <Show when={o.hint}>
+                  <span class="shrink-0 text-xs font-normal text-slate-400">{o.hint}</span>
+                </Show>
               </div>
             )}
           </For>

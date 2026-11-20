@@ -516,6 +516,29 @@ export interface AutomationListItem extends Automation {
   lastRun: AutomationRun | null
 }
 
+/** 服务器上的脚本文件，在「自动化」页面里直接编辑 */
+export interface ScriptFile {
+  path: string
+  /** 换行统一成 LF，BOM 去掉；写回时按 eol / bom 还原 */
+  content: string
+  /** 文件不存在时为 false，保存时会新建 */
+  exists: boolean
+  /** 读取时的修改时间，写回时用来发现「这期间别处也改了这个文件」 */
+  mtimeMs: number | null
+  eol: 'lf' | 'crlf'
+  bom: boolean
+}
+
+export const ScriptFileWrite = z.object({
+  path: z.string().min(1),
+  content: z.string(),
+  /** 读取时的 mtimeMs；null = 读取时文件还不存在 */
+  expectedMtime: z.number().nullable(),
+  eol: z.enum(['lf', 'crlf']).default('lf'),
+  bom: z.boolean().default(false),
+})
+export type ScriptFileWrite = z.infer<typeof ScriptFileWrite>
+
 export interface AutomationMeta {
   /** 自动化是否可用（服务端可以用 AUTOMEDIA_AUTOMATION=off 关掉） */
   enabled: boolean
@@ -579,4 +602,85 @@ export function guessSubtitleSuffix(fileName: string): string {
     for (const [re, suffix] of SUFFIX_RULES) if (re.test(t)) return suffix
   }
   return ''
+}
+
+// ───────── 按种子标题猜是哪个媒体 ─────────
+
+/** 两个字符串的编辑距离（Levenshtein） */
+export function levenshtein(a: string, b: string): number {
+  if (a === b) return 0
+  const x = [...a]
+  const y = [...b]
+  if (!x.length) return y.length
+  if (!y.length) return x.length
+  let prev = Array.from({ length: y.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= x.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= y.length; j++)
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1))
+    prev = cur
+  }
+  return prev[y.length]
+}
+
+/** 0 ~ 1，1 = 完全相同 */
+export function similarity(a: string, b: string): number {
+  const len = Math.max([...a].length, [...b].length)
+  return len ? 1 - levenshtein(a, b) / len : 0
+}
+
+/** 种子名里和作品名无关的词：分辨率、编码、片源、集数范围…… */
+const NOISE =
+  /^(\d+|\d{3,4}[pi]|[248]k|uhd|hdr|sdr|dv|[xh]\.?26[45]|hevc|avc|av1|flac|aac|ac3|eac3|dts|truehd|opus|ma10p|hi10p|10bit|8bit|yuv\d+p?\d*|bd|bdrip|bdmv|bluray|blu|ray|dvd|dvdrip|web|webrip|dl|remux|tv|tvrip|mkv|mp4|chs|cht|gb|big5|jpn|jpsc|jptc|sc|tc|s\d+|s\d+e\d+|e\d+|ep\d+|v\d|vol|fin|end|complete|batch|\d+[-~]\d+)$/
+
+/** 统一大小写、全角半角，标点换成空格，去掉噪音词 */
+function cleanTitle(s: string, dropNoise: boolean): string {
+  const words = s
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s._\-+/\\|:：,，、!！?？'"「」『』《》·~～&()（）[\]【】]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean)
+  return (dropNoise ? words.filter((w) => !NOISE.test(w)) : words).join(' ')
+}
+
+const KNOWN_EXT = new Set([...VIDEO_EXT, ...SUBTITLE_EXT, ...ARCHIVE_EXT, ...IMAGE_EXT, 'pdf', 'epub', 'mobi'])
+
+/**
+ * 从种子名里拆出几个「可能是作品名」的片段：去掉方括号之后剩下的部分、每个括号里的内容、整个名字。
+ * 字幕组的命名习惯五花八门（[组名] 标题 [01-12] / [组名][标题][1080p]），所以分别比较，取最像的那个。
+ */
+export function titleCandidates(name: string): string[] {
+  const base = KNOWN_EXT.has(extOf(name)) ? name.slice(0, name.lastIndexOf('.')) : name
+  const brackets = /[[【(（]([^\]】)）]*)[\]】)）]/g
+  const parts = [base.replace(brackets, ' '), ...[...base.matchAll(brackets)].map((m) => m[1]), base]
+  return [...new Set(parts.map((p) => cleanTitle(p, true)).filter(Boolean))]
+}
+
+export interface RankedMedia<T> {
+  item: T
+  /** 0 ~ 1；被排除的是 -1 */
+  score: number
+}
+
+/**
+ * 按和种子名的相似度给媒体排序。exclude 为真的（比如已经导入过东西的）不参与比较，
+ * 相似度记为 -1，排在最后（彼此之间按标题自然排序）。
+ */
+export function rankBySimilarity<T extends { title: string; originalTitle?: string }>(
+  name: string,
+  items: T[],
+  exclude: (item: T) => boolean = () => false,
+): RankedMedia<T>[] {
+  const candidates = titleCandidates(name)
+  return items
+    .map((item) => {
+      if (exclude(item) || !candidates.length) return { item, score: exclude(item) ? -1 : 0 }
+      const titles = [item.title, item.originalTitle ?? ''].map((t) => cleanTitle(t, false)).filter(Boolean)
+      let score = 0
+      for (const c of candidates) for (const t of titles) score = Math.max(score, similarity(c, t))
+      return { item, score }
+    })
+    .sort((a, b) => b.score - a.score || naturalCompare(a.item.title, b.item.title))
 }

@@ -8,6 +8,8 @@ import type {
   AutomationRun,
   AutomationRunStatus,
   AutomationTriggerKind,
+  ScriptFile,
+  ScriptFileWrite,
 } from '@automedia/shared'
 import { Cron } from 'croner'
 import { desc, eq, inArray } from 'drizzle-orm'
@@ -57,6 +59,53 @@ export function cronPreview(cron: string, count = 3): number[] {
   const next = job.nextRuns(count).map((d) => d.getTime())
   job.stop()
   return next
+}
+
+// ───────── 编辑服务器上的脚本文件 ─────────
+
+const SCRIPT_FILE_MAX = 1024 * 1024
+const BOM = '﻿'
+
+function scriptFilePath(p: string): string {
+  if (!automationEnabled()) throw new AppError(403, '自动化功能已被关闭（AUTOMEDIA_AUTOMATION=off）')
+  const file = p.trim()
+  if (!path.isAbsolute(file)) throw badRequest('脚本文件要写绝对路径')
+  return path.resolve(file)
+}
+
+export async function readScriptFile(p: string): Promise<ScriptFile> {
+  const file = scriptFilePath(p)
+  const st = await fs.stat(file).catch((e: NodeJS.ErrnoException) => {
+    if (e.code === 'ENOENT') return null
+    throw badRequest(`读不了这个文件：${errMsg(e)}`)
+  })
+  if (!st) return { path: file, content: '', exists: false, mtimeMs: null, eol: process.platform === 'win32' ? 'crlf' : 'lf', bom: false }
+  if (!st.isFile()) throw badRequest(`这不是一个文件：${file}`)
+  if (st.size > SCRIPT_FILE_MAX) throw badRequest('文件超过 1 MB，不像是脚本，不在网页里编辑')
+  const buf = await fs.readFile(file)
+  if (buf.includes(0)) throw badRequest('这是一个二进制文件，不能在网页里编辑')
+  let text = buf.toString('utf8')
+  const bom = text.startsWith(BOM)
+  if (bom) text = text.slice(1)
+  const eol = text.includes('\r\n') ? 'crlf' : 'lf'
+  return { path: file, content: text.replace(/\r\n/g, '\n'), exists: true, mtimeMs: st.mtimeMs, eol, bom }
+}
+
+export async function writeScriptFile(input: ScriptFileWrite): Promise<ScriptFile> {
+  const file = scriptFilePath(input.path)
+  const st = await fs.stat(file).catch(() => null)
+  if (st && !st.isFile()) throw badRequest(`这不是一个文件：${file}`)
+  // 打开之后这个文件在别处被改过（或被删掉 / 新建了）：不要悄悄覆盖
+  if ((st?.mtimeMs ?? null) !== input.expectedMtime)
+    throw new AppError(409, '这个文件在打开之后被别处修改过了，请重新打开再改（复制好你的修改）')
+  if (!(await fs.stat(path.dirname(file)).catch(() => null))?.isDirectory())
+    throw badRequest(`目录不存在：${path.dirname(file)}`)
+  let text = input.content.replace(/\r\n/g, '\n')
+  if (input.eol === 'crlf') text = text.replace(/\n/g, '\r\n')
+  if (input.bom) text = BOM + text
+  // 已有文件：原地写，保留权限（可执行位）；新文件：给上可执行权限，方便不填解释器直接执行
+  await fs.writeFile(file, text, st ? undefined : { mode: 0o755 })
+  return readScriptFile(file)
 }
 
 async function validate(input: AutomationInput): Promise<void> {

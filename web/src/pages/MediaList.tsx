@@ -23,7 +23,14 @@ export function Poster(props: { url: string; class?: string }) {
   )
 }
 
-function NewMediaModal(props: { comic?: boolean; onClose: () => void }) {
+export function NewMediaModal(props: {
+  comic?: boolean
+  /** 手动创建时预填的标题 */
+  initialTitle?: string
+  /** 传了就不跳转到新媒体的页面，交给调用方处理 */
+  onCreated?: (d: MediaDetail) => void | Promise<void>
+  onClose: () => void
+}) {
   const navigate = useNavigate()
   const [settings] = createResource(() => api<Settings>('/settings'))
   const [tab, setTab] = createSignal<'provider' | 'manual'>(props.comic ? 'manual' : 'provider')
@@ -32,6 +39,8 @@ function NewMediaModal(props: { comic?: boolean; onClose: () => void }) {
   const library = () => libraryId() ?? settings()?.libraries[0]?.id ?? ''
   const [formatPick, setFormat] = createSignal<ComicFormat | null>(null)
   const comicFormat = () => formatPick() ?? settings()?.comicDefaultFormat ?? 'images'
+
+  const done = (d: MediaDetail) => (props.onCreated ? props.onCreated(d) : navigate(`/media/${d.media.id}`))
 
   const [by, setBy] = createSignal<LookupBy>('name')
   const [query, setQuery] = createSignal('')
@@ -43,10 +52,10 @@ function NewMediaModal(props: { comic?: boolean; onClose: () => void }) {
     const d = await api<MediaDetail>('/media/from-provider', {
       body: { provider: r.provider, kind: r.kind, id: r.id, libraryId: library() },
     })
-    navigate(`/media/${d.media.id}`)
+    await done(d)
   })
 
-  const [title, setTitle] = createSignal('')
+  const [title, setTitle] = createSignal(props.initialTitle ?? '')
   const [year, setYear] = createSignal('')
   const [create, creating] = useAction(async () => {
     const d = await api<MediaDetail>('/media', {
@@ -54,7 +63,7 @@ function NewMediaModal(props: { comic?: boolean; onClose: () => void }) {
         media: { kind: kind(), title: title(), year: year() ? Number(year()) : null, libraryId: library(), comicFormat: comicFormat() },
       },
     })
-    navigate(`/media/${d.media.id}`)
+    await done(d)
   })
 
   const tabClass = (active: boolean) =>
@@ -147,7 +156,7 @@ function NewMediaModal(props: { comic?: boolean; onClose: () => void }) {
           }}
         >
           <Field class="sm:col-span-3" label="标题">
-            <input class="input" value={title()} onInput={(e) => setTitle(e.currentTarget.value)} />
+            <input class="input" autofocus value={title()} onInput={(e) => setTitle(e.currentTarget.value)} />
           </Field>
           <Field label="年份">
             <input class="input" type="number" value={year()} onInput={(e) => setYear(e.currentTarget.value)} />

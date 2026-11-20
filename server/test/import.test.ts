@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import zlib from 'node:zlib'
-import { AutomationInput, ComicImportRequest, ImportRequest, MediaSaveInput, guessSubtitleSuffix, naturalCompare } from '@automedia/shared'
+import { AutomationInput, ComicImportRequest, ImportRequest, MediaSaveInput, guessSubtitleSuffix, levenshtein, naturalCompare, rankBySimilarity, titleCandidates } from '@automedia/shared'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import { parseItems, render } from '../src/ai/suggest'
@@ -17,9 +17,11 @@ import {
   listAutomations,
   listRuns,
   parseArgv,
+  readScriptFile,
   startRun,
   stopScheduler,
   updateAutomation,
+  writeScriptFile,
 } from '../src/automation/automation'
 import { openDb } from '../src/db'
 import { executeComicImport, getPages, planComicImport, setPageOrder } from '../src/comics/import'
@@ -781,6 +783,41 @@ describe('自动化', () => {
     await expect(make({ content: 'x', env: [{ key: 'A', value: '1' }, { key: 'A', value: '2' }] })).rejects.toThrow(/重名/)
     expect(() => AutomationInput.parse({ name: 'x', env: [{ key: '1BAD', value: '' }] })).toThrow()
   })
+
+  it('在网页里编辑服务器上的脚本文件', async () => {
+    const file = path.join(tmp, 'scripts', 'edit-me.sh')
+    await fs.mkdir(path.dirname(file), { recursive: true })
+
+    // 不存在：可以新建
+    const fresh = await readScriptFile(file)
+    expect([fresh.exists, fresh.mtimeMs, fresh.content]).toEqual([false, null, ''])
+    const created = await writeScriptFile({ path: file, content: 'echo 1\n', expectedMtime: null, eol: 'lf', bom: false })
+    expect([created.exists, created.content]).toEqual([true, 'echo 1\n'])
+    if (process.platform !== 'win32') expect((await fs.stat(file)).mode & 0o111).not.toBe(0) // 新建的给了可执行权限
+
+    // CRLF + BOM 的文件：编辑器里看到的是 LF，写回去还是 CRLF + BOM
+    const crlf = '﻿line1\r\nchanged\r\n'
+    await fs.writeFile(file, '﻿line1\r\nline2\r\n')
+    const opened = await readScriptFile(file)
+    expect([opened.content, opened.eol, opened.bom]).toEqual(['line1\nline2\n', 'crlf', true])
+    const saved = await writeScriptFile({ path: file, content: 'line1\nchanged\n', expectedMtime: opened.mtimeMs, eol: opened.eol, bom: opened.bom })
+    expect(await fs.readFile(file, 'utf8')).toBe(crlf)
+
+    // 打开之后文件在别处被改了：拒绝覆盖
+    await fs.utimes(file, new Date(), new Date(Date.now() + 5000))
+    await expect(
+      writeScriptFile({ path: file, content: 'mine', expectedMtime: saved.mtimeMs, eol: 'lf', bom: false }),
+    ).rejects.toThrow(/被别处修改过/)
+    expect(await fs.readFile(file, 'utf8')).toBe(crlf)
+
+    await expect(readScriptFile('relative/path.sh')).rejects.toThrow(/绝对路径/)
+    await expect(readScriptFile(path.dirname(file))).rejects.toThrow(/不是一个文件/)
+    await fs.writeFile(path.join(tmp, 'scripts', 'bin'), Buffer.from([0x7f, 0x45, 0x00, 0x01]))
+    await expect(readScriptFile(path.join(tmp, 'scripts', 'bin'))).rejects.toThrow(/二进制/)
+    await expect(
+      writeScriptFile({ path: path.join(tmp, 'no-such-dir', 'x.sh'), content: '', expectedMtime: null, eol: 'lf', bom: false }),
+    ).rejects.toThrow(/目录不存在/)
+  })
 })
 
 describe('漫画封面', () => {
@@ -899,6 +936,37 @@ describe('只监听内网地址', () => {
     expect(logs.some((l) => l.includes('不再监听 127.0.0.1'))).toBe(true)
     listeners.stop()
     await app.close()
+  })
+})
+
+describe('按种子标题自动匹配', () => {
+  it('编辑距离', () => {
+    expect(levenshtein('kitten', 'sitting')).toBe(3)
+    expect(levenshtein('', 'abc')).toBe(3)
+    expect(levenshtein('重启人生', '重启人生')).toBe(0)
+    expect(levenshtein('重启人生', '重生人生')).toBe(1) // 按字符而不是 UTF-16 单元算
+  })
+
+  it('从种子名里拆出可能的作品名', () => {
+    expect(titleCandidates('[VCB-Studio] ReLIFE [Ma10p_1080p]')).toEqual(['relife', 'vcb studio', 'vcb studio relife'])
+    expect(titleCandidates('[Nekomoe kissaten][Kusuriya no Hitorigoto][01-24][1080p][JPSC]')).toContain('kusuriya no hitorigoto')
+    expect(titleCandidates('[漫画] Another Comic Vol.1.zip')[0]).toBe('another comic')
+    expect(titleCandidates('Some.Show.S01.1080p.BluRay.x265-GRP')[0]).toBe('some show grp')
+  })
+
+  it('按相似度排序，导入过的排在最后', () => {
+    const list = [
+      { id: 1, title: 'Re:Zero', originalTitle: 'Re:ゼロから始める異世界生活', imported: false },
+      { id: 2, title: '重启人生', originalTitle: 'ReLIFE', imported: false },
+      { id: 3, title: 'ReLIFE 完结篇', originalTitle: '', imported: true },
+      { id: 4, title: 'Lycoris Recoil', originalTitle: '', imported: false },
+    ]
+    const ranked = rankBySimilarity('[VCB-Studio] ReLIFE [Ma10p_1080p]', list, (m) => m.imported)
+    expect(ranked.map((r) => r.item.id)).toEqual([2, 1, 4, 3])
+    expect(ranked[0].score).toBe(1) // 原名完全一致
+    expect(ranked[3].score).toBe(-1)
+    // 都被排除时没有可以自动选的
+    expect(rankBySimilarity('ReLIFE', list, () => true).every((r) => r.score === -1)).toBe(true)
   })
 })
 
