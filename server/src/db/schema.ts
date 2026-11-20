@@ -26,6 +26,7 @@ export const media = sqliteTable('media', {
   fanartUrl: text('fanart_url').notNull().default(''),
   libraryId: text('library_id').notNull().default(''),
   comicFormat: text('comic_format').notNull().default('images'),
+  importLocked: integer('import_locked', { mode: 'boolean' }).notNull().default(false),
   folderPath: text('folder_path').notNull().default(''),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),

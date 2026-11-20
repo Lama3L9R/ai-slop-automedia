@@ -118,7 +118,9 @@ export function NewMediaModal(props: {
           <input
             class="input"
             autofocus
-            placeholder={by() === 'name' ? '作品名称' : by() === 'imdb' ? 'tt1234567' : '数字 ID'}
+            placeholder={
+              by() === 'name' ? '作品名称，或粘贴 TMDB 页面链接' : by() === 'imdb' ? 'tt1234567' : by() === 'tmdb' ? '数字 ID，或粘贴 TMDB 页面链接' : '数字 ID'
+            }
             value={query()}
             onInput={(e) => setQuery(e.currentTarget.value)}
           />
@@ -134,6 +136,13 @@ export function NewMediaModal(props: {
                 <div class="min-w-0 flex-1">
                   <div class="font-medium">
                     {r.title} <span class="font-normal text-slate-400">{r.year ?? ''}</span>
+                    <span
+                      class="badge ml-2 align-middle"
+                      classList={{ 'bg-amber-100 text-amber-800': r.kind !== kind(), 'bg-slate-100 text-slate-600': r.kind === kind() }}
+                      title={r.kind !== kind() ? '在选的类型里没找到，这是另一种类型的结果；添加时按这个类型创建' : undefined}
+                    >
+                      {KIND_LABEL[r.kind]}
+                    </span>
                   </div>
                   <div class="text-xs text-slate-500">{r.originalTitle}</div>
                   <p class="mt-1 line-clamp-2 text-xs text-slate-500">{r.overview}</p>

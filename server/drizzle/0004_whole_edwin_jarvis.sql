@@ -1,0 +1,1 @@
+ALTER TABLE `media` ADD `import_locked` integer DEFAULT false NOT NULL;

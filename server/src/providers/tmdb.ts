@@ -71,6 +71,27 @@ const movieResult = (r: MovieBrief): ProviderSearchResult => ({
   posterUrl: img(r.poster_path),
 })
 
+/** 只在一种类型（剧集 / 电影）里查。按 ID 查不到时返回空数组而不是报错，方便换类型重试 */
+async function searchKind(kind: MediaKind, by: LookupBy, q: string): Promise<ProviderSearchResult[]> {
+  if (by === 'tvdb') return find(kind, 'tvdb_id', q)
+  if (by === 'imdb') return find(kind, 'imdb_id', q)
+  if (by === 'tmdb') {
+    // 「687163-project-hail-mary」这种带名字的写法：取前面的数字
+    const id = /^\d+/.exec(q)?.[0]
+    if (!id) throw badRequest('TMDB ID 是一串数字，比如 687163（也可以直接粘贴 TMDB 的页面链接）')
+    try {
+      return kind === 'series'
+        ? [tvResult(await call<TvBrief>(`/tv/${id}`))]
+        : [movieResult(await call<MovieBrief>(`/movie/${id}`))]
+    } catch (e) {
+      if (e instanceof AppError && e.status === 404) return []
+      throw e
+    }
+  }
+  if (kind === 'series') return (await call<{ results: TvBrief[] }>('/search/tv', { query: q })).results.map(tvResult)
+  return (await call<{ results: MovieBrief[] }>('/search/movie', { query: q })).results.map(movieResult)
+}
+
 async function find(kind: MediaKind, source: 'tvdb_id' | 'imdb_id', id: string): Promise<ProviderSearchResult[]> {
   const r = await call<{ tv_results: TvBrief[]; movie_results: MovieBrief[] }>(`/find/${encodeURIComponent(id)}`, {
     external_source: source,
@@ -211,17 +232,18 @@ export const tmdbProvider: MetadataProvider = {
   async search(kind: MediaKind, by: LookupBy, query: string) {
     const q = query.trim()
     if (!q) return []
+    // 直接粘贴的 TMDB 页面链接：themoviedb.org/movie/687163-project-hail-mary → 按链接里的类型和 ID 查
+    const link = /themoviedb\.org\/(movie|tv)\/(\d+)/i.exec(q)
+    if (link) return searchKind(link[1].toLowerCase() === 'tv' ? 'series' : 'movie', 'tmdb', link[2])
     if (by === 'tvdb') {
       if (kind === 'movie') throw badRequest('TMDB 不支持用 TVDB ID 查电影，请用 TMDB / IMDb ID 或名称')
-      return find(kind, 'tvdb_id', q)
+      return searchKind(kind, by, q)
     }
-    if (by === 'imdb') return find(kind, 'imdb_id', q)
-    if (by === 'tmdb') {
-      if (kind === 'series') return [tvResult(await call<TvBrief>(`/tv/${encodeURIComponent(q)}`))]
-      return [movieResult(await call<MovieBrief>(`/movie/${encodeURIComponent(q)}`))]
-    }
-    if (kind === 'series') return (await call<{ results: TvBrief[] }>('/search/tv', { query: q })).results.map(tvResult)
-    return (await call<{ results: MovieBrief[] }>('/search/movie', { query: q })).results.map(movieResult)
+    const found = await searchKind(kind, by, q)
+    if (found.length) return found
+    // 选的类型下没有：换另一种再查一次。最常见的是查电影时「类型」还停在默认的「剧集」，
+    // 这时 TMDB ID 687163 会被当成剧集的 ID 去查，名称也只在剧集里搜
+    return searchKind(kind === 'series' ? 'movie' : 'series', by, q)
   },
 
   fetch(kind, id) {

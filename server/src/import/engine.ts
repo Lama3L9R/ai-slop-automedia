@@ -20,7 +20,7 @@ import {
   scanUnmanagedVideos,
 } from '../media/existing'
 import { buildLayout, mediaFolderName } from '../media/layout'
-import { getMediaDetail, removeLinks } from '../media/store'
+import { assertImportable, getMediaDetail, removeLinks } from '../media/store'
 import { syncMedia } from '../media/sync'
 import { findLibrary } from '../settings'
 import { setTorrentState } from '../sources/qb'
@@ -53,6 +53,7 @@ async function resolveDir(media: Media, libPath: string) {
 export async function planImport(req: ImportRequest): Promise<Plan> {
   const detail = getMediaDetail(req.mediaId)
   const { media } = detail
+  assertImportable(media)
   const lib = findLibrary(media.libraryId)
   if (!lib) throw badRequest(`「${media.title}」还没有选择媒体库，请先在媒体页面设置`)
 
@@ -160,6 +161,7 @@ export async function planImport(req: ImportRequest): Promise<Plan> {
 }
 
 export async function executeImport(req: ImportRequest): Promise<ImportResult> {
+  assertImportable(getMediaDetail(req.mediaId).media)
   const d = db()
   const warnings: string[] = []
   if (req.replaceSource) {

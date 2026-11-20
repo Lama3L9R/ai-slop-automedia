@@ -54,7 +54,8 @@ export default function WizardPage() {
   const tree = () => (treeRes.error ? undefined : treeRes())
   const [mediaList] = createResource(async () =>
     (await api<MediaListItem[]>('/media'))
-      .filter((m) => m.kind !== 'comic'),
+      // 锁定导入的媒体直接不出现
+      .filter((m) => m.kind !== 'comic' && !m.importLocked),
   )
   const [settings] = createResource(() => api<Settings>('/settings'))
 
@@ -105,15 +106,23 @@ export default function WizardPage() {
     setAssign(reconcile(next))
   }
 
+  /** 等媒体列表也到了再处理目录树：要知道哪些媒体锁定了导入。列表刷新（比如新建了一个）不重复处理同一棵树 */
+  let lastTree: SourceTree | undefined
+  const available = (id: number) => (mediaList() ?? []).some((m) => m.id === id)
   createEffect(
-    on(tree, (t) => {
-      if (!t) return
+    on(() => (mediaList() ? tree() : undefined), (t) => {
+      if (!t || t === lastTree) return
+      lastTree = t
+      // 指定的媒体（?media=）锁定了导入：当作没指定
+      if (mediaId() !== null && !available(mediaId()!)) setMediaId(null)
       // 没有可导入文件的目录（Scans、CDs…）默认折叠
       setCollapsed(new Set([...dirFiles()].filter(([, files]) => !files.length).map(([rel]) => rel)))
       setSelected(new Set<string>())
-      if (mediaId() === null && t.links.length) {
+      // 之前导入过：默认选上次导入到的那个（锁定了导入的除外）
+      const prior = t.links.filter((l) => available(l.mediaId))
+      if (mediaId() === null && prior.length) {
         const freq = new Map<number, number>()
-        for (const l of t.links) freq.set(l.mediaId, (freq.get(l.mediaId) ?? 0) + 1)
+        for (const l of prior) freq.set(l.mediaId, (freq.get(l.mediaId) ?? 0) + 1)
         setMediaId([...freq].sort((a, b) => b[1] - a[1])[0][0])
       }
       prefill(mediaId())
@@ -131,7 +140,7 @@ export default function WizardPage() {
     if (autoDone || !t || !list) return
     autoDone = true
     untrack(() => {
-      if (mediaId() !== null || t.links.length) return
+      if (mediaId() !== null) return
       const top = ranked().top
       if (!top) return
       setMediaId(top.item.id)

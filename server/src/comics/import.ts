@@ -14,7 +14,7 @@ import { and, eq } from 'drizzle-orm'
 import { db, schema } from '../db'
 import { badRequest, errMsg } from '../errors'
 import { buildLayout } from '../media/layout'
-import { getMediaDetail, removeLinks } from '../media/store'
+import { assertImportable, getMediaDetail, removeLinks } from '../media/store'
 import { syncMedia } from '../media/sync'
 import { findLibrary } from '../settings'
 import { setTorrentState } from '../sources/qb'
@@ -83,6 +83,7 @@ async function resolveUnit(p: string): Promise<Unit | null> {
 async function loadComic(mediaId: number) {
   const detail = getMediaDetail(mediaId)
   if (detail.media.kind !== 'comic') throw badRequest(`「${detail.media.title}」不是漫画`)
+  assertImportable(detail.media)
   const lib = findLibrary(detail.media.libraryId)
   if (!lib) throw badRequest(`「${detail.media.title}」还没有选择媒体库，请先在它的页面里设置`)
   return { detail, lib }

@@ -15,7 +15,7 @@ import type {
 } from '@automedia/shared'
 import { asc, eq, inArray, sql } from 'drizzle-orm'
 import { db, schema } from '../db'
-import { badRequest, notFound } from '../errors'
+import { AppError, badRequest, notFound } from '../errors'
 import { pruneEmptyDirs, removeFile } from '../util/fs'
 import { removeLocalPoster } from './poster'
 
@@ -27,6 +27,12 @@ export const rowToMedia = (r: MediaRow): Media => ({
   kind: r.kind as MediaKind,
   comicFormat: r.comicFormat as ComicFormat,
 })
+
+/** 锁定导入的媒体拒绝任何导入（视频、字幕、漫画） */
+export function assertImportable(media: Pick<Media, 'title' | 'importLocked'>): void {
+  if (media.importLocked)
+    throw new AppError(409, `「${media.title}」已锁定导入。确实要往里导入的话，先在它的页面里取消「锁定导入」`)
+}
 
 export const rowToLink = (r: LinkRow): Link => ({
   ...r,

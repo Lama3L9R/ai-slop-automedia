@@ -1054,6 +1054,17 @@ describe('按种子标题自动匹配', () => {
     expect(counts()).toEqual([3, 2])
     await importVols([2, 3])
     expect(counts()).toEqual([3, 0])
+
+    // 锁定导入：列表里带着标记（向导据此隐藏），服务器拒绝往里导入，解锁后照常
+    const media = { ...getMediaDetail(id).media, importLocked: true }
+    saveMedia(id, MediaSaveInput.parse({ media, episodes: getMediaDetail(id).episodes }))
+    expect(listMedia().find((x) => x.id === id)!.importLocked).toBe(true)
+    await expect(importVols([1])).rejects.toThrow(/已锁定导入/)
+    const videoReq = request(id, { items: [{ path: path.join(src, 'v1', 'x.mkv'), season: 1, episode: 1, kind: 'video' }] })
+    await expect(planImport(videoReq)).rejects.toThrow(/已锁定导入/)
+    await expect(executeImport(videoReq)).rejects.toThrow(/已锁定导入/)
+    saveMedia(id, MediaSaveInput.parse({ media: { ...media, importLocked: false }, episodes: getMediaDetail(id).episodes }))
+    expect((await importVols([1])).items.map((r) => r.done)).toEqual([true])
   })
 })
 

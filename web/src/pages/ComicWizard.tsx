@@ -105,7 +105,8 @@ export default function ComicWizardPage() {
   /** 读取失败时 tree() 返回 undefined，而不是把错误抛出去（抛出去会让整个页面卡在「正在读取」） */
   const tree = () => (treeRes.error ? undefined : treeRes())
   const [comics, { refetch: refetchComics }] = createResource(async () =>
-    (await api<MediaListItem[]>('/media')).filter((m) => m.kind === 'comic'),
+    // 锁定导入的漫画直接不出现
+    (await api<MediaListItem[]>('/media')).filter((m) => m.kind === 'comic' && !m.importLocked),
   )
   const [settings] = createResource(() => api<Settings>('/settings'))
 
@@ -150,13 +151,21 @@ export default function ComicWizardPage() {
     setAssign(reconcile(next))
   }
 
+  /** 等媒体列表也到了再处理目录树：要知道哪些媒体锁定了导入。列表刷新（比如新建了一个）不重复处理同一棵树 */
+  let lastTree: SourceTree | undefined
+  const available = (id: number) => (comics() ?? []).some((m) => m.id === id)
   createEffect(
-    on(tree, (t) => {
-      if (!t) return
+    on(() => (comics() ? tree() : undefined), (t) => {
+      if (!t || t === lastTree) return
+      lastTree = t
+      // 指定的漫画（?media=）锁定了导入：当作没指定
+      if (mediaId() !== null && !available(mediaId()!)) setMediaId(null)
       setSelected(new Set<string>())
-      if (mediaId() === null && t.pageImports.length) {
+      // 之前导入过：默认选上次导入到的那部（锁定了导入的除外）
+      const prior = t.pageImports.filter((p) => available(p.mediaId))
+      if (mediaId() === null && prior.length) {
         const freq = new Map<number, number>()
-        for (const p of t.pageImports) freq.set(p.mediaId, (freq.get(p.mediaId) ?? 0) + p.count)
+        for (const p of prior) freq.set(p.mediaId, (freq.get(p.mediaId) ?? 0) + p.count)
         setMediaId([...freq].sort((a, b) => b[1] - a[1])[0][0])
       }
       prefill(mediaId())
@@ -174,7 +183,7 @@ export default function ComicWizardPage() {
     if (autoDone || !t || !list) return
     autoDone = true
     untrack(() => {
-      if (mediaId() !== null || t.pageImports.length) return
+      if (mediaId() !== null) return
       const top = ranked().top
       if (!top) return
       setMediaId(top.item.id)

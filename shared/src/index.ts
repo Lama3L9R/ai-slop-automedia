@@ -159,6 +159,8 @@ export const MediaInput = z.object({
   libraryId: z.string().default(''),
   /** 只对 kind = comic 有意义 */
   comicFormat: ComicFormat.default('images'),
+  /** 锁定导入：导入向导里不出现，也拒绝往里导入（防止误导入） */
+  importLocked: z.boolean().default(false),
 })
 export type MediaInput = z.infer<typeof MediaInput>
 

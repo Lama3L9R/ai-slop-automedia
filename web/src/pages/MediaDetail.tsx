@@ -362,6 +362,25 @@ export default function MediaDetailPage() {
                 onInput={(e) => edit('media', 'year', numOrNull(e.currentTarget.value))}
               />
             </Field>
+            <label
+              class="flex cursor-pointer items-start gap-2 self-end rounded-md border px-3 py-2"
+              classList={{
+                'border-amber-400 bg-amber-50': form.media.importLocked,
+                'border-slate-200': !form.media.importLocked,
+              }}
+              title="锁定后，导入向导的「导入到」列表里不再出现它，也不参与按标题自动匹配；服务器也会拒绝往里导入。已经导入的文件不受影响。"
+            >
+              <input
+                type="checkbox"
+                class="mt-0.5"
+                checked={form.media.importLocked}
+                onChange={(e) => edit('media', 'importLocked', e.currentTarget.checked)}
+              />
+              <span>
+                <span class="block text-sm font-medium">锁定导入</span>
+                <span class="block text-xs text-slate-400">不出现在导入列表里，防止误导入</span>
+              </span>
+            </label>
             <Show when={isComic()}>
               <Field class="sm:col-span-2" label="形式">
                 <select
