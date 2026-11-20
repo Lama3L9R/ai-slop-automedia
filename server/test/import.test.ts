@@ -897,10 +897,32 @@ describe('漫画封面', () => {
     expect(await read(path.join(dir, 'folder.png'))).toBe('PNG-TWO')
     expect(await has(path.join(dir, 'folder.jpg'))).toBe(false)
 
+    // CBZ 模式：Emby 不从 cbz 里取封面，同一个文件夹里的书也不认 folder.jpg，只认 <书名>-poster.*，所以每本旁边放一份
+    saveMedia(id, MediaSaveInput.parse({ media: { ...getMediaDetail(id).media, comicFormat: 'cbz' } }))
+    await executeComicImport(
+      ComicImportRequest.parse({
+        mediaId: id,
+        linkMode: 'copy',
+        sourceType: 'dir',
+        sourceRef: 'cover',
+        items: [{ path: path.join(tmp, 'downloads', '[漫画] 测试漫画', '第01卷'), season: 1, episode: 2 }],
+      }),
+    )
+    expect((await syncMedia(id)).warnings).toEqual([])
+    const ls = async () => (await fs.readdir(dir)).sort()
+    expect(await ls()).toEqual([
+      'folder.png',
+      '封面漫画 - 001-poster.png',
+      '封面漫画 - 001.cbz',
+      '封面漫画 - 002-poster.png',
+      '封面漫画 - 002.cbz',
+    ])
+    expect(await read(path.join(dir, '封面漫画 - 002-poster.png'))).toBe('PNG-TWO')
+
     const del = await app.inject({ method: 'DELETE', url: `/api/media/${id}/poster`, headers: auth })
     expect(del.json().posterUrl).toBe('')
     expect((await app.inject({ url: second })).statusCode).toBe(404)
-    expect(await has(path.join(dir, 'folder.png'))).toBe(false)
+    expect(await ls()).toEqual(['封面漫画 - 001.cbz', '封面漫画 - 002.cbz'])
     await deleteMedia(id)
     await app.close()
   })

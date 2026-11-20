@@ -46,8 +46,12 @@ function computeArtifacts(detail: MediaDetail, layout: Layout, dir: string, lock
     // 封面：Emby 把文件夹里的 folder.jpg 当作这个文件夹的图
     const poster = media.posterUrl.trim()
     const local = localPosterPath(poster)
-    if (local) out.set(path.join(dir, `folder${path.extname(local)}`), { file: local, signature: poster })
-    else if (/^https?:\/\//i.test(poster)) out.set(path.join(dir, `folder.${imageExt(poster)}`), { url: poster })
+    /** 把漫画封面放到 <base>.<扩展名> */
+    const cover = (base: string) => {
+      if (local) out.set(`${base}${path.extname(local)}`, { file: local, signature: poster })
+      else if (/^https?:\/\//i.test(poster)) out.set(`${base}.${imageExt(poster)}`, { url: poster })
+    }
+    cover(path.join(dir, 'folder'))
     // 图片模式进的是图片库，没有可写的元数据；CBZ 模式一集打一个包，ComicInfo.xml 放在包里
     if (media.comicFormat !== 'cbz') return out
     const groups = new Map<string, Link[]>()
@@ -74,7 +78,11 @@ function computeArtifacts(detail: MediaDetail, layout: Layout, dir: string, lock
       })
       const entries = pages.map((p, i) => ({ source: p.sourcePath, name: `${String(i + 1).padStart(4, '0')}.${p.ext}` }))
       const signature = createHash('sha1').update(JSON.stringify([comicInfo, entries])).digest('hex')
-      out.set(path.join(dir, layout.episodeDir(season, episode)), { cbz: { comicInfo, pages: entries }, signature })
+      const cbzPath = path.join(dir, layout.episodeDir(season, episode))
+      out.set(cbzPath, { cbz: { comicInfo, pages: entries }, signature })
+      // 每一本的封面：Emby 不从 cbz 里取封面；和别的书放在同一个文件夹里时，folder.jpg 也不算它的，
+      // 只认和书同名的 <书名>-poster.jpg。每本都用漫画的封面
+      cover(cbzPath.replace(/\.cbz$/i, '-poster'))
     }
     return out
   }
