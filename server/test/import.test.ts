@@ -23,7 +23,8 @@ import {
   updateAutomation,
   writeScriptFile,
 } from '../src/automation/automation'
-import { openDb } from '../src/db'
+import { db, openDb, schema } from '../src/db'
+import { eq, sql } from 'drizzle-orm'
 import { executeComicImport, getPages, planComicImport, setPageOrder } from '../src/comics/import'
 import { executeImport, planImport } from '../src/import/engine'
 import { describeRule, localAddresses, matcher, parseListen, startRestrictedListeners } from '../src/listen'
@@ -676,15 +677,46 @@ describe('漫画', () => {
     expect((await syncMedia(id)).warnings).toEqual([])
     expect(await ls(dir)).toEqual(['CBZ 漫画 - 001 - 序章.cbz', 'CBZ 漫画 - 002.cbz'])
 
-    // 多季：进季文件夹，文件名带 SxxExxx，ComicInfo 写 Volume
+    // 多季：不建季文件夹（Emby 会把只装着一本书的文件夹当成书，用文件夹名当书名），
+    // 全部平铺，文件名带 SxxExxx，ComicInfo 写 Volume
     await executeComicImport(comicRequest(id, [{ path: vol2, season: 2, episode: 1 }]))
-    expect(await ls(dir)).toEqual(['S01', 'S02'])
-    expect(await ls(path.join(dir, 'S02'))).toEqual(['CBZ 漫画 - S02E001.cbz'])
-    out = await unpack(path.join(dir, 'S02', 'CBZ 漫画 - S02E001.cbz'))
+    expect(await ls(dir)).toEqual(['CBZ 漫画 - S01E001 - 序章.cbz', 'CBZ 漫画 - S01E002.cbz', 'CBZ 漫画 - S02E001.cbz'])
+    out = await unpack(path.join(dir, 'CBZ 漫画 - S02E001.cbz'))
     expect(await read(path.join(out, 'ComicInfo.xml'))).toContain('<Volume>2</Volume>')
 
-    await deleteMedia(id)
+    // 旧版本留下的季文件夹布局（S02 - xx/….cbz）：再同步一次就搬回平铺，空的季文件夹清掉
+    const flat = path.join(dir, 'CBZ 漫画 - S02E001.cbz')
+    const old = path.join(dir, 'S02 - 旧布局', 'CBZ 漫画 - S02E001.cbz')
+    await fs.mkdir(path.dirname(old))
+    await fs.rename(flat, old)
+    db().update(schema.artifacts).set({ path: old }).where(eq(schema.artifacts.path, flat)).run()
+    db()
+      .update(schema.links)
+      .set({ targetPath: sql`${old} || substr(${schema.links.targetPath}, ${flat.length + 1})` })
+      .where(sql`substr(${schema.links.targetPath}, 1, ${flat.length + 1}) = ${flat + '#'}`)
+      .run()
+    expect((await syncMedia(id)).warnings).toEqual([])
+    expect(await ls(dir)).toEqual(['CBZ 漫画 - S01E001 - 序章.cbz', 'CBZ 漫画 - S01E002.cbz', 'CBZ 漫画 - S02E001.cbz'])
+    expect(getMediaDetail(id).pageCounts.map((c) => c.count)).toEqual([3, 2, 2])
+
+    // 标题里有半角方括号：Emby 解析书名时会在第一个「 [...]」处截断，所以磁盘上换成全角；ComicInfo 里保持原样
+    const bracketed = { ...media, title: '(C99) [作者 (社团)] CBZ 漫画 [DL版]' }
+    saveMedia(id, MediaSaveInput.parse({ media: bracketed, episodes: [{ season: 1, number: 1, title: '序章 [前篇]' }] }))
+    expect((await syncMedia(id)).warnings).toEqual([])
     expect(await has(dir)).toBe(false)
+    const bdir = path.join(lib, '(C99) ［作者 (社团)］ CBZ 漫画 ［DL版］ (2020)')
+    expect(await ls(bdir)).toEqual([
+      '(C99) ［作者 (社团)］ CBZ 漫画 ［DL版］ - S01E001 - 序章 ［前篇］.cbz',
+      '(C99) ［作者 (社团)］ CBZ 漫画 ［DL版］ - S01E002.cbz',
+      '(C99) ［作者 (社团)］ CBZ 漫画 ［DL版］ - S02E001.cbz',
+    ])
+    out = await unpack(path.join(bdir, '(C99) ［作者 (社团)］ CBZ 漫画 ［DL版］ - S01E001 - 序章 ［前篇］.cbz'))
+    const binfo = await read(path.join(out, 'ComicInfo.xml'))
+    expect(binfo).toContain('<Series>(C99) [作者 (社团)] CBZ 漫画 [DL版]</Series>')
+    expect(binfo).toContain('<Title>序章 [前篇]</Title>')
+
+    await deleteMedia(id)
+    expect(await has(bdir)).toBe(false)
     expect(await read(path.join(comicSrc, '第01卷', '1.jpg'))).toBe('p1')
   })
 

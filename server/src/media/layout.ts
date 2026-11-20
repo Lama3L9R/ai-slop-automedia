@@ -21,7 +21,8 @@ import { pad2, type Episode, type Media, type Season } from '@automedia/shared'
  *
  * comic，CBZ 模式（Emby 书籍库；一集是一个 cbz，页面打包在里面，不单独落盘）:
  *   <标题>/<标题> - 001 - <集标题>.cbz
- *   <标题>/S01 - <季标题>/<标题> - S01E001 - <集标题>.cbz
+ *   <标题>/<标题> - S01E001 - <集标题>.cbz          有多季时也不建季文件夹（原因见 buildLayout）
+ *   名字里的半角方括号换成全角的（见 bookName）
  */
 
 function clean(name: string): string {
@@ -50,8 +51,16 @@ export function mediaFolderName(m: LayoutMedia): string {
         : []
   const id = ids.find(([, v]) => v.trim())
   const year = m.year ? ` (${m.year})` : ''
-  return `${sanitizeName(m.title)}${year}${id ? ` [${id[0]}=${id[1].trim()}]` : ''}`
+  const title = m.kind === 'comic' && m.comicFormat === 'cbz' ? bookName(sanitizeName(m.title)) : sanitizeName(m.title)
+  return `${title}${year}${id ? ` [${id[0]}=${id[1].trim()}]` : ''}`
 }
+
+/**
+ * Emby 书籍库没有元数据文件可读，书名只能从文件名 / 文件夹名解析，而它的解析会在第一个「 [...]」处截断
+ * （把方括号当成发布组之类的标签）：「(C99) [作者] 标题」只剩「(C99)」。
+ * 所以书籍库里的名字把半角方括号换成全角的，看起来一样，但不会被截断。
+ */
+export const bookName = (name: string) => name.replace(/\[/g, '［').replace(/\]/g, '］')
 
 export interface Layout {
   folderName: string
@@ -100,18 +109,19 @@ export function buildLayout(
     const seasonNumbers = new Set([...ordered.map((s) => s.season), ...seasonTitles.keys()])
     const multiSeason = seasonNumbers.size > 1
     const withTitle = (prefix: string, t: string) => (t ? `${prefix} - ${t}` : prefix)
-    const relDir = (season: number) =>
-      multiSeason ? withTitle(`S${pad2(season)}`, seasonTitles.get(season) ?? '') : ''
     const cbz = media.comicFormat === 'cbz'
+    // CBZ 不建季文件夹：Emby 书籍库会把「只装着一本书的文件夹」当成这本书，用文件夹名当书名，
+    // 季文件夹里只有一本时书名就成了「S01」，封面也找不到。全部平铺在漫画文件夹里，季号写在文件名和 ComicInfo 里
+    const relDir = (season: number) =>
+      multiSeason && !cbz ? withTitle(`S${pad2(season)}`, seasonTitles.get(season) ?? '') : ''
     const epTitle = (season: number, episode: number) => clean(epMap.get(slotKey(season, episode))?.title ?? '')
     const num = (episode: number) => String(episode).padStart(3, '0')
     const episodeDir = (season: number, episode: number) =>
-      path.join(
-        relDir(season),
-        cbz
-          ? `${withTitle(`${title} - ${multiSeason ? `S${pad2(season)}E${num(episode)}` : num(episode)}`, epTitle(season, episode))}.cbz`
-          : withTitle(num(episode), epTitle(season, episode)),
-      )
+      cbz
+        ? bookName(
+            `${withTitle(`${title} - ${multiSeason ? `S${pad2(season)}E${num(episode)}` : num(episode)}`, epTitle(season, episode))}.cbz`,
+          )
+        : path.join(relDir(season), withTitle(num(episode), epTitle(season, episode)))
     const pageName = (l: { position?: number; ext: string }) => `${String(l.position ?? 0).padStart(4, '0')}.${l.ext}`
     return {
       folderName: mediaFolderName(media),
