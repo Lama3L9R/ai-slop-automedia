@@ -28,7 +28,7 @@ import { executeComicImport, getPages, planComicImport, setPageOrder } from '../
 import { executeImport, planImport } from '../src/import/engine'
 import { describeRule, localAddresses, matcher, parseListen, startRestrictedListeners } from '../src/listen'
 import { parseEpisodes } from '../src/media/existing'
-import { createMedia, deleteMedia, getMediaDetail, removeLinks, saveMedia } from '../src/media/store'
+import { createMedia, deleteMedia, getMediaDetail, listMedia, removeLinks, saveMedia } from '../src/media/store'
 import { imagesIdle, syncMedia } from '../src/media/sync'
 import { saveSettings } from '../src/settings'
 import { readTree } from '../src/sources/tree'
@@ -967,6 +967,39 @@ describe('按种子标题自动匹配', () => {
     expect(ranked[3].score).toBe(-1)
     // 都被排除时没有可以自动选的
     expect(rankBySimilarity('ReLIFE', list, () => true).every((r) => r.score === -1)).toBe(true)
+  })
+
+  it('统计还空着的集：一本一个种子的漫画，只导入了一部分时不算「已全部导入」', async () => {
+    const src = path.join(tmp, 'downloads', '分卷漫画')
+    for (const v of ['v1', 'v2', 'v3']) {
+      await fs.mkdir(path.join(src, v), { recursive: true })
+      await fs.writeFile(path.join(src, v, '1.jpg'), v)
+    }
+    const id = createMedia(
+      MediaSaveInput.parse({
+        media: { kind: 'comic', title: '分卷漫画', libraryId: 'anime' },
+        episodes: [1, 2, 3].map((number) => ({ season: 1, number })),
+      }),
+    )
+    const counts = () => {
+      const m = listMedia().find((x) => x.id === id)!
+      return [m.episodeCount, m.missingCount]
+    }
+    const importVols = (vols: number[]) =>
+      executeComicImport(
+        ComicImportRequest.parse({
+          mediaId: id,
+          linkMode: 'copy',
+          sourceType: 'dir',
+          sourceRef: src,
+          items: vols.map((n) => ({ path: path.join(src, `v${n}`), season: 1, episode: n })),
+        }),
+      )
+    expect(counts()).toEqual([3, 3])
+    await importVols([1])
+    expect(counts()).toEqual([3, 2])
+    await importVols([2, 3])
+    expect(counts()).toEqual([3, 0])
   })
 })
 

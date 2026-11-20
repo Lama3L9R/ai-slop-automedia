@@ -56,13 +56,29 @@ export function listMedia(): MediaListItem[] {
     .where(eq(schema.links.kind, 'page'))
     .groupBy(schema.links.mediaId)
     .all()
+  // 还空着的集：元数据里有，但还没有视频（漫画：没有页面）
+  const missing = d
+    .select({ mediaId: schema.episodes.mediaId, n: count })
+    .from(schema.episodes)
+    .where(
+      sql`not exists (select 1 from ${schema.links} as l where l.media_id = ${schema.episodes.mediaId}
+        and l.season = ${schema.episodes.season} and l.episode = ${schema.episodes.number} and l.kind in ('video', 'page'))`,
+    )
+    .groupBy(schema.episodes.mediaId)
+    .all()
   const epMap = new Map(eps.map((r) => [r.mediaId, r.n]))
   const vidMap = new Map([...vids, ...comics].map((r) => [r.mediaId, r.n]))
+  const missMap = new Map(missing.map((r) => [r.mediaId, r.n]))
   return d
     .select()
     .from(schema.media)
     .all()
-    .map((r) => ({ ...rowToMedia(r), episodeCount: epMap.get(r.id) ?? 0, videoCount: vidMap.get(r.id) ?? 0 }))
+    .map((r) => ({
+      ...rowToMedia(r),
+      episodeCount: epMap.get(r.id) ?? 0,
+      videoCount: vidMap.get(r.id) ?? 0,
+      missingCount: missMap.get(r.id) ?? 0,
+    }))
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 

@@ -202,6 +202,8 @@ export interface Media extends MediaInput {
 export interface MediaListItem extends Media {
   episodeCount: number
   videoCount: number
+  /** 还没有导入任何视频（漫画：页面）的集数 */
+  missingCount: number
 }
 
 export interface Link {
